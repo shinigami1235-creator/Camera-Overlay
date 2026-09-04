@@ -118,7 +118,47 @@ function cacheDom() {
     retakeBtn: id('retake-btn'),
 
     toast: id('toast'),
+
+    debugPanel: id('debug-panel'),
+    reviewDebug: id('review-debug'),
   };
+}
+
+// ---------------------------------------------------------------------
+// Diagnostic readout (?debug=1) — shows live video/frame/crop numbers so
+// a real-device mismatch can be pinned down from a screenshot instead of
+// guessed at. Off by default; adds no cost when not enabled.
+// ---------------------------------------------------------------------
+const DEBUG = /[?&]debug=1\b/.test(location.search);
+let debugTimer = null;
+
+function currentCaptureRatio() {
+  return ASPECT_RATIOS[state.settings.captureAspect] || (dom.frame.clientWidth / dom.frame.clientHeight);
+}
+
+function debugSnapshot() {
+  const vw = dom.video.videoWidth, vh = dom.video.videoHeight;
+  const frameRect = dom.frame.getBoundingClientRect();
+  const ratio = currentCaptureRatio();
+  const crop = vw && vh ? computeCropRect(vw, vh, ratio) : null;
+  const lines = [
+    'aspect setting: ' + state.settings.captureAspect + '  ratio: ' + ratio.toFixed(4),
+    'video native: ' + vw + 'x' + vh,
+    'frame box (css px): ' + Math.round(frameRect.width) + 'x' + Math.round(frameRect.height),
+    'isFrontFacing: ' + state.isFrontFacing + '  video transform: ' + (dom.video.style.transform || 'none'),
+  ];
+  if (crop) {
+    lines.push('crop sx,sy,sw,sh: ' + [crop.sx, crop.sy, crop.sw, crop.sh].map((n) => Math.round(n)).join(', '));
+    lines.push('=> saved canvas would be: ' + Math.round(crop.sw) + 'x' + Math.round(crop.sh));
+  }
+  return lines.join('\n');
+}
+
+function startDebugPanel() {
+  if (!DEBUG || !dom.debugPanel) return;
+  dom.debugPanel.hidden = false;
+  clearInterval(debugTimer);
+  debugTimer = setInterval(() => { dom.debugPanel.textContent = debugSnapshot(); }, 400);
 }
 
 // ---------------------------------------------------------------------
@@ -272,6 +312,7 @@ async function startCamera(constraintsOverride) {
     await refreshDeviceList();
     hideStartOverlay();
     startMetering();
+    startDebugPanel();
   } catch (err) {
     console.warn('getUserMedia failed', err);
     showStartOverlay(cameraErrorMessage(err));
@@ -660,9 +701,12 @@ async function capturePhoto() {
   // was never shown to the user, and on most cameras has a different
   // shape than the screen) — it means "whatever shape the screen/#frame
   // currently is," so we derive the ratio from the live frame box itself.
-  const ratio = ASPECT_RATIOS[state.settings.captureAspect] || (dom.frame.clientWidth / dom.frame.clientHeight);
+  const ratio = currentCaptureRatio();
   const crop = computeCropRect(vw, vh, ratio);
   const destW = Math.round(crop.sw), destH = Math.round(crop.sh);
+  const captureDebugText = DEBUG
+    ? 'AT CAPTURE — ' + debugSnapshot() + '\nisFrontFacing during capture: ' + state.isFrontFacing
+    : '';
 
   dom.captureCanvas.width = destW;
   dom.captureCanvas.height = destH;
@@ -696,18 +740,22 @@ async function capturePhoto() {
     console.warn('composite build failed', e);
   }
 
-  state.lastCaptured = { afterDataUrl, compositeDataUrl };
+  state.lastCaptured = { afterDataUrl, compositeDataUrl, debugText: captureDebugText };
   showReviewSheet();
 }
 
 function showReviewSheet() {
-  const { afterDataUrl, compositeDataUrl } = state.lastCaptured;
+  const { afterDataUrl, compositeDataUrl, debugText } = state.lastCaptured;
   dom.reviewAfterImg.src = afterDataUrl;
   if (compositeDataUrl) {
     dom.reviewCompositeWrap.hidden = false;
     dom.reviewCompositeImg.src = compositeDataUrl;
   } else {
     dom.reviewCompositeWrap.hidden = true;
+  }
+  if (DEBUG && dom.reviewDebug) {
+    dom.reviewDebug.hidden = false;
+    dom.reviewDebug.textContent = debugText;
   }
   openSheet(dom.reviewSheet);
 }

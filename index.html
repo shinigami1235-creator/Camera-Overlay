@@ -44,6 +44,11 @@
 <canvas id="meter-canvas" class="visually-hidden" width="64" height="48"></canvas>
 <canvas id="capture-canvas" class="visually-hidden"></canvas>
 
+<!-- Diagnostic readout — only shown with ?debug=1 in the URL. Lets us see
+     exactly what the live video/frame/crop numbers are on a specific
+     device instead of guessing from screenshots. -->
+<pre id="debug-panel" hidden></pre>
+
 <header id="top-bar">
   <div class="top-bar-inner">
     <div class="brand">
@@ -175,6 +180,8 @@
       <figcaption>New photo</figcaption>
     </figure>
   </div>
+
+  <pre id="review-debug" hidden></pre>
 
   <div class="review-actions">
     <button id="save-both-btn" class="btn btn-primary" type="button">Save Both to Photos</button>

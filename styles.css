@@ -518,6 +518,31 @@ select {
   overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap;
 }
 
+/* ---------- Diagnostic readout (?debug=1) ---------- */
+#debug-panel {
+  position: fixed;
+  top: 8px; left: 8px;
+  z-index: 70;
+  margin: 0;
+  max-width: 60vw;
+  background: rgba(0,0,0,.75);
+  color: #6CFF9B;
+  font: 11px/1.4 var(--cs-font-mono);
+  padding: 6px 8px;
+  border-radius: var(--cs-r-sm);
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+#review-debug {
+  margin: 0 0 var(--cs-3);
+  background: var(--cs-n-100);
+  color: var(--cs-n-700);
+  font: 11px/1.4 var(--cs-font-mono);
+  padding: 8px 10px;
+  border-radius: var(--cs-r-sm);
+  white-space: pre-wrap;
+}
+
 /* ---------- Short / landscape viewports ----------
    A phone rotated to landscape (or a small tablet split-screened) has much
    less vertical room — tighten the chrome so the camera stage doesn't get
