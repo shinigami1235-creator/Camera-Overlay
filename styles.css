@@ -191,6 +191,20 @@ button {
   overflow: hidden;
   background: #000;
   touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* #frame is the actual capture area. At "Full" it's sized to exactly fill
+   #stage (JS sets inline width/height in px) via applyFrameSize() in
+   app.js; picking a specific shape shrinks it to that aspect ratio,
+   centered, with the stage's black background showing as letterbox bars
+   on the sides that don't fit. */
+#frame {
+  position: relative;
+  overflow: hidden;
+  background: #000;
 }
 
 #video, #ghost-img {
@@ -391,6 +405,27 @@ select {
   gap: var(--cs-3);
 }
 .ghost-tools .btn { flex: 1; }
+
+.aspect-picker {
+  display: flex;
+  gap: var(--cs-2);
+  overflow-x: auto;
+  padding-bottom: 2px; /* room for a focus ring without clipping */
+}
+.aspect-picker button {
+  flex: none;
+  padding: 10px var(--cs-4);
+  border-radius: var(--cs-r-pill);
+  background: var(--cs-n-100);
+  color: var(--cs-n-700);
+  font: var(--cs-label);
+  white-space: nowrap;
+}
+.aspect-picker button.is-active {
+  background: var(--cs-primary-700);
+  color: var(--cs-n-000);
+  font-weight: 600;
+}
 
 .about-block {
   margin-top: var(--cs-6);

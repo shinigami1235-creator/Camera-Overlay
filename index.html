@@ -24,18 +24,20 @@
 <body>
 
 <div id="stage">
-  <video id="video" autoplay playsinline muted></video>
-  <img id="ghost-img" alt="">
+  <div id="frame">
+    <video id="video" autoplay playsinline muted></video>
+    <img id="ghost-img" alt="">
 
-  <div id="pin" aria-hidden="true">
-    <svg viewBox="0 0 56 56" fill="none">
-      <circle cx="28" cy="28" r="16" stroke="#C89A3C" stroke-width="2" opacity="0.9"/>
-      <line x1="28" y1="2" x2="28" y2="16" stroke="#C89A3C" stroke-width="2"/>
-      <line x1="28" y1="40" x2="28" y2="54" stroke="#C89A3C" stroke-width="2"/>
-      <line x1="2" y1="28" x2="16" y2="28" stroke="#C89A3C" stroke-width="2"/>
-      <line x1="40" y1="28" x2="54" y2="28" stroke="#C89A3C" stroke-width="2"/>
-      <circle cx="28" cy="28" r="2.5" fill="#C89A3C"/>
-    </svg>
+    <div id="pin" aria-hidden="true">
+      <svg viewBox="0 0 56 56" fill="none">
+        <circle cx="28" cy="28" r="16" stroke="#C89A3C" stroke-width="2" opacity="0.9"/>
+        <line x1="28" y1="2" x2="28" y2="16" stroke="#C89A3C" stroke-width="2"/>
+        <line x1="28" y1="40" x2="28" y2="54" stroke="#C89A3C" stroke-width="2"/>
+        <line x1="2" y1="28" x2="16" y2="28" stroke="#C89A3C" stroke-width="2"/>
+        <line x1="40" y1="28" x2="54" y2="28" stroke="#C89A3C" stroke-width="2"/>
+        <circle cx="28" cy="28" r="2.5" fill="#C89A3C"/>
+      </svg>
+    </div>
   </div>
 </div>
 
@@ -133,6 +135,17 @@
   <div class="select-row">
     <label for="camera-select">Active camera</label>
     <select id="camera-select"></select>
+  </div>
+
+  <h3>Photo shape</h3>
+  <p class="desc">Crops both the live view and the capture to this shape. Matching your before-photo's shape here also makes the ghost line up more easily.</p>
+  <div class="aspect-picker" role="group" aria-label="Photo shape">
+    <button type="button" data-aspect="native" class="is-active">Full</button>
+    <button type="button" data-aspect="1:1">1:1</button>
+    <button type="button" data-aspect="3:4">3:4</button>
+    <button type="button" data-aspect="4:3">4:3</button>
+    <button type="button" data-aspect="9:16">9:16</button>
+    <button type="button" data-aspect="16:9">16:9</button>
   </div>
 
   <h3>Ghost alignment</h3>

@@ -28,6 +28,17 @@ const META_TAG = 'COV1:';      // marks our EXIF ImageDescription payload
 const LS_KEY = 'camoverlay.settings.v1';
 const COMPOSITE_TARGET_H = 900;
 
+// Capture shapes offered in Settings. null ("native") means no crop at
+// all — the frame just fills the stage at whatever shape the screen is.
+const ASPECT_RATIOS = {
+  native: null,
+  '1:1': 1,
+  '3:4': 3 / 4,
+  '4:3': 4 / 3,
+  '9:16': 9 / 16,
+  '16:9': 16 / 9,
+};
+
 // ---------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------
@@ -47,7 +58,7 @@ const state = {
   ghost: { offsetXPct: 0, offsetYPct: 0, scale: 1, flipped: false },
   tilt: { available: null, live: null, permissionNeeded: false },
   liveLum: null,
-  settings: { readout: 'both', opacity: 45 },
+  settings: { readout: 'both', opacity: 45, captureAspect: 'native' },
   meterTimer: null,
   tiltProbeTimer: null,
   lastCaptured: null, // { afterDataUrl, compositeDataUrl }
@@ -72,6 +83,7 @@ function cacheDom() {
     enableTiltBtn: id('enable-tilt-btn'),
 
     stage: id('stage'),
+    frame: id('frame'),
     video: id('video'),
     ghostImg: id('ghost-img'),
     pin: id('pin'),
@@ -90,6 +102,7 @@ function cacheDom() {
     settingsSheet: id('settings-sheet'),
     settingsClose: id('settings-close'),
     readoutButtons: Array.from(document.querySelectorAll('#settings-sheet .segmented button')),
+    aspectButtons: Array.from(document.querySelectorAll('#settings-sheet .aspect-picker button')),
     cameraSelect: id('camera-select'),
     flipGhostBtn: id('flip-ghost-btn'),
     resetGhostBtn: id('reset-ghost-btn'),
@@ -126,6 +139,54 @@ function applySettingsToUI() {
   dom.opacitySlider.value = state.settings.opacity;
   dom.opacityPct.textContent = state.settings.opacity + '%';
   dom.readoutButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.value === state.settings.readout));
+  dom.aspectButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.aspect === state.settings.captureAspect));
+}
+
+// ---------------------------------------------------------------------
+// Frame sizing (capture shape / letterboxing)
+// ---------------------------------------------------------------------
+// Computed in JS rather than pure CSS aspect-ratio so the math is exactly
+// the same "fit inside, preserve ratio" logic used for the capture crop
+// below — the two need to agree pixel-for-pixel with what's on screen.
+function applyFrameSize() {
+  const ratio = ASPECT_RATIOS[state.settings.captureAspect];
+  if (!ratio) {
+    dom.frame.style.width = '100%';
+    dom.frame.style.height = '100%';
+    return;
+  }
+  const stageW = dom.stage.clientWidth, stageH = dom.stage.clientHeight;
+  if (!stageW || !stageH) return;
+  const stageRatio = stageW / stageH;
+  let w, h;
+  if (stageRatio > ratio) {
+    h = stageH;
+    w = h * ratio;
+  } else {
+    w = stageW;
+    h = w / ratio;
+  }
+  dom.frame.style.width = Math.round(w) + 'px';
+  dom.frame.style.height = Math.round(h) + 'px';
+}
+
+// Center-crop math shared by applyFrameSize() above (for on-screen
+// letterboxing) and capturePhoto() below (for the actual saved pixels) —
+// the two must agree exactly, or what the user framed on screen won't be
+// what ends up in the file. Replicates object-fit:cover's crop logic
+// against the raw source dimensions.
+function computeCropRect(srcW, srcH, ratio) {
+  if (!ratio) return { sx: 0, sy: 0, sw: srcW, sh: srcH };
+  const srcRatio = srcW / srcH;
+  let sw, sh;
+  if (srcRatio > ratio) {
+    sh = srcH;
+    sw = sh * ratio;
+  } else {
+    sw = srcW;
+    sh = sw / ratio;
+  }
+  return { sx: (srcW - sw) / 2, sy: (srcH - sh) / 2, sw, sh };
 }
 
 // ---------------------------------------------------------------------
@@ -470,7 +531,7 @@ function initPinDrag() {
   });
   dom.pin.addEventListener('pointermove', (e) => {
     if (!dragging) return;
-    const rect = dom.stage.getBoundingClientRect();
+    const rect = dom.frame.getBoundingClientRect();
     let xPct = ((e.clientX - rect.left) / rect.width) * 100;
     let yPct = ((e.clientY - rect.top) / rect.height) * 100;
     xPct = Math.min(96, Math.max(4, xPct));
@@ -534,7 +595,7 @@ function initGhostGestures() {
       return;
     }
     if (activePointers.size === 1 && panStart) {
-      const rect = dom.stage.getBoundingClientRect();
+      const rect = dom.frame.getBoundingClientRect();
       state.ghost.offsetXPct = clamp(panStart.offX + ((e.clientX - panStart.x) / rect.width) * 100, -50, 50);
       state.ghost.offsetYPct = clamp(panStart.offY + ((e.clientY - panStart.y) / rect.height) * 100, -50, 50);
       applyGhostTransform();
@@ -592,16 +653,25 @@ async function capturePhoto() {
   const vw = dom.video.videoWidth, vh = dom.video.videoHeight;
   if (!vw || !vh) { showToast('Camera not ready yet'); return; }
 
-  dom.captureCanvas.width = vw;
-  dom.captureCanvas.height = vh;
+  // Crop the raw frame to the selected capture shape — same "fit inside,
+  // preserve ratio, center" math the live #frame box uses — so the saved
+  // photo matches what was actually framed on screen, not the raw sensor
+  // shape. "Full" (ratio === null) keeps the whole uncropped frame.
+  const ratio = ASPECT_RATIOS[state.settings.captureAspect];
+  const crop = computeCropRect(vw, vh, ratio);
+  const destW = Math.round(crop.sw), destH = Math.round(crop.sh);
+
+  dom.captureCanvas.width = destW;
+  dom.captureCanvas.height = destH;
   const ctx = dom.captureCanvas.getContext('2d');
   if (state.isFrontFacing) {
     // Un-mirror so the saved file matches real-world orientation even
-    // though the live preview is mirrored for natural framing.
-    ctx.translate(vw, 0);
+    // though the live preview is mirrored for natural framing. The crop
+    // itself is centered, so mirroring afterwards doesn't shift it.
+    ctx.translate(destW, 0);
     ctx.scale(-1, 1);
   }
-  ctx.drawImage(dom.video, 0, 0, vw, vh);
+  ctx.drawImage(dom.video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, destW, destH);
   let afterDataUrl = dom.captureCanvas.toDataURL('image/jpeg', 0.92);
 
   if (state.tilt.available && state.tilt.live && typeof piexif !== 'undefined') {
@@ -761,6 +831,15 @@ function wireControls() {
 
   dom.cameraSelect.addEventListener('change', () => switchToDevice(dom.cameraSelect.value));
 
+  dom.aspectButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.settings.captureAspect = btn.dataset.aspect;
+      dom.aspectButtons.forEach((b) => b.classList.toggle('is-active', b === btn));
+      applyFrameSize();
+      saveSettings();
+    });
+  });
+
   dom.flipGhostBtn.addEventListener('click', () => {
     state.ghost.flipped = !state.ghost.flipped;
     applyGhostTransform();
@@ -802,6 +881,7 @@ function init() {
   cacheDom();
   loadSettings();
   applySettingsToUI();
+  applyFrameSize();
   applyPinPosition();
   applyGhostOpacity();
   applyGhostTransform();
@@ -812,6 +892,8 @@ function init() {
   applyPlatformLabels();
   wireControls();
   registerServiceWorker();
+  window.addEventListener('resize', applyFrameSize);
+  window.addEventListener('orientationchange', applyFrameSize);
 }
 
 document.addEventListener('DOMContentLoaded', init);
