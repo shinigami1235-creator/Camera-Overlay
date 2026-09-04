@@ -53,6 +53,8 @@ const DEFAULT_OUTLINE_INTENSITY = 85;       // % opacity of the outline layer
 // ---------------------------------------------------------------------
 const state = {
   stream: null,
+  imageCapture: null,  // ImageCapture bound to the current track, where supported (see capturePhoto())
+  pendingNativeTilt: null, // tilt reading captured at the moment "Take with Camera App" was tapped
   videoDevices: [],
   currentDeviceId: null,
   facingMode: 'environment',
@@ -110,6 +112,8 @@ function cacheDom() {
     beforeFileInput: id('before-file-input'),
     shutterBtn: id('shutter-btn'),
     flipCamBtn: id('flip-cam-btn'),
+    nativeCaptureBtn: id('native-capture-btn'),
+    nativeCaptureInput: id('native-capture-input'),
 
     sheetScrim: id('sheet-scrim'),
 
@@ -166,6 +170,7 @@ function debugSnapshot() {
     'frame box (css px): ' + Math.round(frameRect.width) + 'x' + Math.round(frameRect.height),
     'preview canvas buffer (what is on screen): ' + dom.previewCanvas.width + 'x' + dom.previewCanvas.height,
     'isFrontFacing: ' + state.isFrontFacing,
+    'ImageCapture.takePhoto() available: ' + !!state.imageCapture,
   ];
   if (crop) {
     lines.push('crop of raw source used for preview AND capture: ' + [crop.sx, crop.sy, crop.sw, crop.sh].map((n) => Math.round(n)).join(', '));
@@ -292,6 +297,7 @@ function stopCamera() {
     state.stream.getTracks().forEach((t) => t.stop());
     state.stream = null;
   }
+  state.imageCapture = null;
   stopPreviewLoop();
 }
 
@@ -408,6 +414,14 @@ async function startCamera(constraintsOverride) {
     const settings = (track.getSettings && track.getSettings()) || {};
     state.isFrontFacing = settings.facingMode === 'user';
     applyGhostTransform(); // re-apply in case a ghost was already loaded before switching cameras
+    // Feature-detected: Chrome/Samsung Internet (Android + desktop) support
+    // this; Safari and Firefox don't. capturePhoto() falls back to a video
+    // frame automatically whenever this is null or takePhoto() fails.
+    try {
+      state.imageCapture = ('ImageCapture' in window) ? new ImageCapture(track) : null;
+    } catch (e) {
+      state.imageCapture = null;
+    }
     state.currentDeviceId = settings.deviceId || state.currentDeviceId;
     await refreshDeviceList();
     hideStartOverlay();
@@ -894,38 +908,84 @@ async function capturePhoto() {
     ? 'AT CAPTURE — ' + debugSnapshot() + '\nisFrontFacing during capture: ' + state.isFrontFacing
     : '';
 
-  // Draw straight from the camera's native video frame, at the frame's
-  // own full resolution — NOT a copy of the on-screen preview canvas.
-  // The preview canvas is deliberately capped to the screen's own
-  // display size (CSS px * devicePixelRatio) since that's all a screen
-  // can show, but reusing that same small buffer as the SAVED photo was
-  // quietly capping every capture's resolution to whatever the phone's
-  // screen happened to need, not what the camera sensor could deliver —
-  // this is what made real-device captures look soft/grainy. Framing
-  // still matches the preview exactly: both draws read the same
-  // underlying decoded video frame via canvas drawImage() (never the
-  // browser's own on-screen video compositing, which is what caused the
-  // original alignment bug) using the identical computeCropRect()
-  // rectangle — only the destination canvas size differs.
+  dom.shutterBtn.disabled = true;
+  try {
+    // Prefer the browser's dedicated still-photo pipeline (ImageCapture's
+    // takePhoto()) over a live video frame, where it's available — this
+    // is the same underlying capture path a native camera app's "shutter"
+    // uses, distinct from (and typically higher quality / less compressed
+    // than) the continuous video stream the live preview draws from.
+    // Support is Chromium-only (Chrome/Samsung Internet on Android, Chrome
+    // desktop) — Safari has never implemented it, so this silently falls
+    // back to the existing video-frame draw there, and also falls back if
+    // takePhoto() throws (some devices advertise support but fail at
+    // capture time). Either way framing still matches the live preview
+    // exactly, via the same computeCropRect() crop rectangle.
+    let stillImg = null;
+    let usedHQStill = false;
+    if (state.imageCapture) {
+      try {
+        const blob = await state.imageCapture.takePhoto();
+        stillImg = await blobToImage(blob);
+        usedHQStill = true;
+      } catch (e) {
+        console.warn('ImageCapture.takePhoto() unavailable/failed, using live video frame instead', e);
+      }
+    }
+
+    if (stillImg) {
+      drawCroppedToCaptureCanvas(stillImg, stillImg.naturalWidth, stillImg.naturalHeight, state.isFrontFacing);
+    } else {
+      drawCroppedToCaptureCanvas(dom.video, vw, vh, state.isFrontFacing);
+    }
+
+    const afterDataUrl = dom.captureCanvas.toDataURL('image/jpeg', 0.92);
+    const debugText = captureDebugText + (DEBUG ? '\nused ImageCapture.takePhoto() still: ' + usedHQStill : '');
+    await finishCapture(afterDataUrl, state.tilt.available ? state.tilt.live : null, debugText);
+  } finally {
+    dom.shutterBtn.disabled = false;
+  }
+}
+
+// Crops+draws a source (the live <video>, or a decoded still Image) into
+// #capture-canvas using the app's one shared "fit inside, preserve ratio,
+// center" crop math — the same computeCropRect() the live preview uses —
+// so every capture path (live shutter, HQ still, native-camera-app
+// handoff) ends up framed identically to what was on screen and shaped to
+// the same "Photo shape" setting. `mirror` re-applies the front-camera
+// flip that's baked into what the user was looking at live; a photo
+// handed back from a native camera app is already in its final
+// orientation and should be drawn with mirror=false.
+function drawCroppedToCaptureCanvas(sourceEl, srcW, srcH, mirror) {
   const ratio = currentCaptureRatio();
-  const crop = computeCropRect(vw, vh, ratio);
-  const captureW = Math.max(1, Math.round(crop.sw));
-  const captureH = Math.max(1, Math.round(crop.sh));
-  dom.captureCanvas.width = captureW;
-  dom.captureCanvas.height = captureH;
+  const crop = computeCropRect(srcW, srcH, ratio);
+  const w = Math.max(1, Math.round(crop.sw));
+  const h = Math.max(1, Math.round(crop.sh));
+  dom.captureCanvas.width = w;
+  dom.captureCanvas.height = h;
   const ctx = dom.captureCanvas.getContext('2d');
   ctx.save();
-  if (state.isFrontFacing) {
-    ctx.translate(captureW, 0);
+  if (mirror) {
+    ctx.translate(w, 0);
     ctx.scale(-1, 1);
   }
-  ctx.drawImage(dom.video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, captureW, captureH);
+  ctx.drawImage(sourceEl, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, w, h);
   ctx.restore();
-  let afterDataUrl = dom.captureCanvas.toDataURL('image/jpeg', 0.92);
+  return { w, h };
+}
 
-  if (state.tilt.available && state.tilt.live && typeof piexif !== 'undefined') {
+function blobToImage(blob) {
+  const url = URL.createObjectURL(blob);
+  return loadImg(url).finally(() => URL.revokeObjectURL(url));
+}
+
+// Shared tail for every capture path: embeds the tilt reading (if any) as
+// EXIF, builds the before/after composite, and opens the review sheet.
+async function finishCapture(afterDataUrlRaw, tiltForExif, debugText) {
+  let afterDataUrl = afterDataUrlRaw;
+  if (tiltForExif && typeof piexif !== 'undefined') {
     try {
-      const meta = { beta: round1(state.tilt.live.beta), gamma: round1(state.tilt.live.gamma), ts: Date.now() };
+      const meta = { beta: round1(tiltForExif.beta), gamma: round1(tiltForExif.gamma), ts: Date.now() };
       const exifObj = { '0th': {}, Exif: {}, GPS: {} };
       exifObj['0th'][piexif.ImageIFD.ImageDescription] = META_TAG + JSON.stringify(meta);
       const exifBytes = piexif.dump(exifObj);
@@ -942,8 +1002,47 @@ async function capturePhoto() {
     console.warn('composite build failed', e);
   }
 
-  state.lastCaptured = { afterDataUrl, compositeDataUrl, debugText: captureDebugText };
+  state.lastCaptured = { afterDataUrl, compositeDataUrl, debugText: debugText || '' };
   showReviewSheet();
+}
+
+// "Take with Camera App" handoff: hands framing off to the device's own
+// native camera app (its actual best-quality capture pipeline — full
+// sensor resolution, HDR/night-mode processing, whatever that phone's
+// camera is capable of) via <input type="file" capture>, then treats the
+// returned photo like any other capture. There's no way to show the ghost
+// overlay during that native app's own viewfinder — it's a separate app —
+// so this suits the case where the phone is already held in the aligned
+// position from the live overlay and just needs the shutter press to
+// happen in the higher-quality app instead of here.
+function triggerNativeCapture() {
+  // Read tilt now, before the native camera app takes over the screen —
+  // once it does, this page is backgrounded and can't read live device
+  // orientation any more.
+  state.pendingNativeTilt = (state.tilt.available && state.tilt.live)
+    ? { beta: state.tilt.live.beta, gamma: state.tilt.live.gamma }
+    : null;
+  dom.nativeCaptureInput.setAttribute('capture', state.isFrontFacing ? 'user' : 'environment');
+  dom.nativeCaptureInput.click();
+}
+
+function handleNativeCaptureFile(file) {
+  const tiltForExif = state.pendingNativeTilt;
+  state.pendingNativeTilt = null;
+  const reader = new FileReader();
+  reader.onload = () => {
+    loadImg(reader.result).then((img) => {
+      const { w, h } = drawCroppedToCaptureCanvas(img, img.naturalWidth, img.naturalHeight, false);
+      const afterDataUrl = dom.captureCanvas.toDataURL('image/jpeg', 0.92);
+      const debugText = DEBUG
+        ? 'AT CAPTURE (native camera app handoff)\nsource photo: ' + img.naturalWidth + 'x' + img.naturalHeight
+          + '\ncropped to: ' + w + 'x' + h + '  aspect setting: ' + state.settings.captureAspect
+        : '';
+      finishCapture(afterDataUrl, tiltForExif, debugText);
+    }).catch(() => showToast('Could not read that photo'));
+  };
+  reader.onerror = () => showToast('Could not read that photo');
+  reader.readAsDataURL(file);
 }
 
 function showReviewSheet() {
@@ -1071,6 +1170,13 @@ function wireControls() {
 
   dom.flipCamBtn.addEventListener('click', flipCamera);
   dom.shutterBtn.addEventListener('click', capturePhoto);
+
+  dom.nativeCaptureBtn.addEventListener('click', triggerNativeCapture);
+  dom.nativeCaptureInput.addEventListener('change', () => {
+    const file = dom.nativeCaptureInput.files && dom.nativeCaptureInput.files[0];
+    dom.nativeCaptureInput.value = '';
+    if (file) handleNativeCaptureFile(file);
+  });
 
   dom.readoutButtons.forEach((btn) => {
     btn.addEventListener('click', () => {

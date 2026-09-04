@@ -285,6 +285,27 @@ button {
 .opacity-row input[type="range"] { flex: 1; accent-color: var(--cs-brand-gold); }
 .opacity-row .pct { font-family: var(--cs-font-mono); font-size: 12px; width: 34px; text-align: right; color: var(--cs-n-100); }
 
+/* "Take with Camera App" — hands the shutter off to the phone's own
+   native camera app for full quality (see app.js's triggerNativeCapture()
+   comment). Styled as a full-width pill so it's a deliberate, clearly
+   labeled second option, distinct from (and less "instant tap" than) the
+   circular shutter button below it. */
+.native-capture-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cs-2);
+  width: 100%;
+  padding: var(--cs-2) var(--cs-4);
+  background: rgba(200,154,60,.16);
+  border: 1px solid rgba(200,154,60,.5);
+  border-radius: var(--cs-r-pill);
+  color: var(--cs-n-000);
+  font: var(--cs-label);
+}
+.native-capture-btn svg { width: 18px; height: 18px; color: var(--cs-brand-gold); flex: none; }
+.native-capture-btn:active { background: rgba(200,154,60,.28); }
+
 .action-row {
   display: grid;
   grid-template-columns: var(--cs-target) 1fr var(--cs-target);
@@ -320,6 +341,7 @@ button {
   transition: transform .1s ease;
 }
 #shutter-btn:active::after { transform: scale(.85); }
+#shutter-btn:disabled { opacity: .6; }
 
 .hint {
   text-align: center;
