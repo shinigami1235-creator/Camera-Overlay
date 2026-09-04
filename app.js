@@ -267,13 +267,6 @@ function stopCamera() {
   stopPreviewLoop();
 }
 
-function setMirror(mirrored) {
-  // The live preview's own mirroring is baked into renderPreviewFrame()'s
-  // canvas draw (see below), not a CSS transform — only the ghost overlay
-  // (a plain <img>) still needs a CSS mirror to match it.
-  applyGhostTransform();
-}
-
 // ---------------------------------------------------------------------
 // Live preview rendering
 //
@@ -330,12 +323,20 @@ function stopPreviewLoop() {
 
 function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
 
-// Combines the automatic front-camera mirror with the user's manual
-// drag/pinch/flip correction into the ghost image's one transform.
+// Applies the user's manual drag/pinch/flip correction to the ghost
+// image. Earlier this also auto-mirrored the ghost whenever the front
+// camera was active, on the assumption that a before-photo captured by
+// this app was always saved "real world" (un-mirrored) and so needed a
+// matching mirror to line up with the mirrored live preview. That's no
+// longer true: capture now saves exactly what was on screen — mirrored
+// too, for a front camera — so a before-photo from this app already
+// shares the live preview's orientation and needs no automatic flip.
+// Flipping stays available as a manual control for the case that still
+// needs it: a before-photo from somewhere else (an older capture, an
+// imported gallery photo) that used the opposite convention.
 function applyGhostTransform() {
-  const mirror = state.isFrontFacing ? -1 : 1;
   const flip = state.ghost.flipped ? -1 : 1;
-  const scaleX = mirror * flip * state.ghost.scale;
+  const scaleX = flip * state.ghost.scale;
   dom.ghostImg.style.transform =
     'translate(' + state.ghost.offsetXPct + '%, ' + state.ghost.offsetYPct + '%) scale(' + scaleX + ', ' + state.ghost.scale + ')';
 }
@@ -366,7 +367,7 @@ async function startCamera(constraintsOverride) {
     const track = stream.getVideoTracks()[0];
     const settings = (track.getSettings && track.getSettings()) || {};
     state.isFrontFacing = settings.facingMode === 'user';
-    setMirror(state.isFrontFacing);
+    applyGhostTransform(); // re-apply in case a ghost was already loaded before switching cameras
     state.currentDeviceId = settings.deviceId || state.currentDeviceId;
     await refreshDeviceList();
     hideStartOverlay();
