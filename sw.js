@@ -1,8 +1,15 @@
 // Camera Overlay — Cygnus Solutions
-// Minimal cache-first service worker for the app shell. Bump CACHE_NAME on
-// every deploy so returning users pick up the new files instead of a stale
-// cached copy.
-const CACHE_NAME = 'camera-overlay-v1';
+//
+// The app shell (HTML/CSS/JS/manifest) is served network-first: try the
+// network so a fix pushed to GitHub Pages is picked up the very next time
+// the page loads, and only fall back to the cached copy when actually
+// offline. The rarely-changing binary assets (vendored EXIF library, icon
+// PNGs) are served cache-first for instant loads, since they're large and
+// essentially never change between deploys.
+//
+// Bump CACHE_NAME whenever APP_SHELL's file list itself changes (a file
+// added/removed) — that forces a clean cache rebuild on next activate.
+const CACHE_NAME = 'camera-overlay-v2';
 const APP_SHELL = [
   './',
   './index.html',
@@ -34,25 +41,46 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function isLongLivedAsset(pathname) {
+  return pathname.includes('/vendor/') || pathname.includes('/icons/');
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  const url = new URL(event.request.url);
+
   // Never cache Google Fonts CSS/woff2 — always try the network first so
   // font updates aren't stuck, but fall back silently if offline.
-  const url = new URL(event.request.url);
   if (url.origin.includes('fonts.g')) {
     event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
     return;
   }
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        if (response.ok && url.origin === self.location.origin) {
+
+  if (url.origin !== self.location.origin) return; // don't intercept anything else cross-origin
+
+  if (isLongLivedAsset(url.pathname)) {
+    // Cache-first: safe to serve instantly, these essentially never change.
+    event.respondWith(
+      caches.match(event.request).then((cached) => cached || fetch(event.request).then((response) => {
+        if (response.ok) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }
         return response;
-      }).catch(() => cached);
-    })
+      }))
+    );
+    return;
+  }
+
+  // Network-first for the app shell itself, so fixes actually reach
+  // returning users instead of being stuck behind a stale cached copy.
+  event.respondWith(
+    fetch(event.request).then((response) => {
+      if (response.ok) {
+        const clone = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+      }
+      return response;
+    }).catch(() => caches.match(event.request))
   );
 });
