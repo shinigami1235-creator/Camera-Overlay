@@ -39,6 +39,12 @@ const state = {
   isFrontFacing: false,
   before: { dataUrl: null, lum: null, tilt: null, hasFile: false },
   pin: { xPct: 50, yPct: 50 },
+  // Manual correction for the ghost overlay, since the live camera stream
+  // and an arbitrary uploaded before-photo can have different native
+  // aspect ratios — object-fit:cover crops each to fill the same box
+  // differently, so even a perfectly re-framed shot can look offset.
+  // Drag/pinch on the stage lets the user compensate.
+  ghost: { offsetXPct: 0, offsetYPct: 0, scale: 1, flipped: false },
   tilt: { available: null, live: null, permissionNeeded: false },
   liveLum: null,
   settings: { readout: 'both', opacity: 45 },
@@ -85,6 +91,8 @@ function cacheDom() {
     settingsClose: id('settings-close'),
     readoutButtons: Array.from(document.querySelectorAll('#settings-sheet .segmented button')),
     cameraSelect: id('camera-select'),
+    flipGhostBtn: id('flip-ghost-btn'),
+    resetGhostBtn: id('reset-ghost-btn'),
 
     reviewSheet: id('review-sheet'),
     reviewClose: id('review-close'),
@@ -156,15 +164,38 @@ function stopCamera() {
 }
 
 function setMirror(mirrored) {
-  const t = mirrored ? 'scaleX(-1)' : 'none';
-  dom.video.style.transform = t;
-  dom.ghostImg.style.transform = t;
+  dom.video.style.transform = mirrored ? 'scaleX(-1)' : 'none';
+  applyGhostTransform(); // ghost's own mirror follows the same facingMode change
+}
+
+function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
+
+// Combines the automatic front-camera mirror with the user's manual
+// drag/pinch/flip correction into the ghost image's one transform.
+function applyGhostTransform() {
+  const mirror = state.isFrontFacing ? -1 : 1;
+  const flip = state.ghost.flipped ? -1 : 1;
+  const scaleX = mirror * flip * state.ghost.scale;
+  dom.ghostImg.style.transform =
+    'translate(' + state.ghost.offsetXPct + '%, ' + state.ghost.offsetYPct + '%) scale(' + scaleX + ', ' + state.ghost.scale + ')';
+}
+
+function resetGhostTransform() {
+  state.ghost.offsetXPct = 0;
+  state.ghost.offsetYPct = 0;
+  state.ghost.scale = 1;
+  applyGhostTransform();
 }
 
 async function startCamera(constraintsOverride) {
   stopCamera();
   const constraints = constraintsOverride || {
-    video: { facingMode: { ideal: state.facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+    // Bias toward a 3:4-ish shape rather than 16:9 widescreen — closer to
+    // what most phone camera apps shoot stills in by default, which
+    // narrows (but can't fully close) the aspect-ratio gap against an
+    // arbitrary uploaded before-photo. No fixed width/height ideal here on
+    // purpose — that would fight the aspectRatio hint.
+    video: { facingMode: { ideal: state.facingMode }, aspectRatio: { ideal: 3 / 4 } },
     audio: false,
   };
   try {
@@ -209,7 +240,7 @@ function flipCamera() {
 }
 
 function switchToDevice(deviceId) {
-  startCamera({ video: { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+  startCamera({ video: { deviceId: { exact: deviceId }, aspectRatio: { ideal: 3 / 4 } }, audio: false });
 }
 
 // ---------------------------------------------------------------------
@@ -229,6 +260,9 @@ function loadBeforeFromDataUrl(dataUrl) {
     dom.ghostImg.src = dataUrl;
     dom.ghostImg.classList.add('is-active');
     applyGhostOpacity();
+    resetGhostTransform(); // a new photo starts centered/unscaled — old nudges shouldn't carry over
+    state.ghost.flipped = false;
+    applyGhostTransform();
 
     state.before.dataUrl = dataUrl;
     state.before.hasFile = true;
@@ -431,7 +465,7 @@ function initPinDrag() {
   dom.pin.addEventListener('pointerdown', (e) => {
     dragging = true;
     dom.pin.classList.add('is-dragging');
-    dom.pin.setPointerCapture(e.pointerId);
+    try { dom.pin.setPointerCapture(e.pointerId); } catch (err) { /* best-effort; drag tracking below still works without capture */ }
     e.preventDefault();
   });
   dom.pin.addEventListener('pointermove', (e) => {
@@ -451,6 +485,69 @@ function initPinDrag() {
     state.pin = { xPct: 50, yPct: 50 };
     applyPinPosition();
   });
+}
+
+// ---------------------------------------------------------------------
+// Ghost overlay drag-to-reposition / pinch-to-scale
+//
+// The live camera stream and an arbitrary uploaded before-photo can have
+// different native aspect ratios, so object-fit:cover crops each to fill
+// the stage differently — even a perfectly re-framed shot can look
+// offset. This lets the user drag the ghost into place and pinch it to
+// match scale, compensating for whatever the automatic fit couldn't.
+// ---------------------------------------------------------------------
+function initGhostGestures() {
+  const activePointers = new Map(); // pointerId -> {x, y}
+  let panStart = null;   // {x, y, offX, offY}
+  let pinchStart = null; // {dist, scale}
+
+  function isPinEvent(e) {
+    return e.target === dom.pin || dom.pin.contains(e.target);
+  }
+
+  dom.stage.addEventListener('pointerdown', (e) => {
+    if (isPinEvent(e) || !state.before.hasFile) return;
+    try { dom.stage.setPointerCapture(e.pointerId); } catch (err) { /* best-effort; tracking below still works without capture */ }
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (activePointers.size === 1) {
+      panStart = { x: e.clientX, y: e.clientY, offX: state.ghost.offsetXPct, offY: state.ghost.offsetYPct };
+      pinchStart = null;
+    } else if (activePointers.size === 2) {
+      const pts = Array.from(activePointers.values());
+      pinchStart = { dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y), scale: state.ghost.scale };
+      panStart = null;
+    }
+  });
+
+  dom.stage.addEventListener('pointermove', (e) => {
+    if (!activePointers.has(e.pointerId)) return;
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (activePointers.size === 2 && pinchStart) {
+      const pts = Array.from(activePointers.values());
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      if (pinchStart.dist > 0) {
+        state.ghost.scale = clamp(pinchStart.scale * (dist / pinchStart.dist), 0.5, 3);
+        applyGhostTransform();
+      }
+      return;
+    }
+    if (activePointers.size === 1 && panStart) {
+      const rect = dom.stage.getBoundingClientRect();
+      state.ghost.offsetXPct = clamp(panStart.offX + ((e.clientX - panStart.x) / rect.width) * 100, -50, 50);
+      state.ghost.offsetYPct = clamp(panStart.offY + ((e.clientY - panStart.y) / rect.height) * 100, -50, 50);
+      applyGhostTransform();
+    }
+  });
+
+  const endPointer = (e) => {
+    activePointers.delete(e.pointerId);
+    if (activePointers.size < 2) pinchStart = null;
+    if (activePointers.size === 0) panStart = null;
+  };
+  dom.stage.addEventListener('pointerup', endPointer);
+  dom.stage.addEventListener('pointercancel', endPointer);
 }
 
 // ---------------------------------------------------------------------
@@ -664,6 +761,16 @@ function wireControls() {
 
   dom.cameraSelect.addEventListener('change', () => switchToDevice(dom.cameraSelect.value));
 
+  dom.flipGhostBtn.addEventListener('click', () => {
+    state.ghost.flipped = !state.ghost.flipped;
+    applyGhostTransform();
+    showToast(state.ghost.flipped ? 'Ghost flipped' : 'Ghost un-flipped');
+  });
+  dom.resetGhostBtn.addEventListener('click', () => {
+    resetGhostTransform();
+    showToast('Ghost position & zoom reset');
+  });
+
   dom.reviewClose.addEventListener('click', closeSheets);
   dom.retakeBtn.addEventListener('click', closeSheets);
   dom.saveAfterBtn.addEventListener('click', () => saveImageDataUrl(state.lastCaptured.afterDataUrl, filename('photo')));
@@ -697,7 +804,9 @@ function init() {
   applySettingsToUI();
   applyPinPosition();
   applyGhostOpacity();
+  applyGhostTransform();
   initPinDrag();
+  initGhostGestures();
   initTiltUI();
   updateLightingBadge();
   applyPlatformLabels();

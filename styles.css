@@ -386,6 +386,12 @@ select {
   max-width: 60%;
 }
 
+.ghost-tools {
+  display: flex;
+  gap: var(--cs-3);
+}
+.ghost-tools .btn { flex: 1; }
+
 .about-block {
   margin-top: var(--cs-6);
   padding-top: var(--cs-4);
