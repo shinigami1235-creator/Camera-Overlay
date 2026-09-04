@@ -25,7 +25,16 @@
 
 <div id="stage">
   <div id="frame">
-    <video id="video" autoplay playsinline muted></video>
+    <canvas id="preview-canvas"></canvas>
+    <!-- The actual camera source. Never shown directly — on some
+         GPU/driver combinations a mirrored, object-fit:cover <video>
+         element can visually render a different (more zoomed-in) crop
+         than the frame data it actually holds, which is what canvas
+         capture reads. Painting the live preview from a canvas (below)
+         instead of trusting the browser's own video rendering makes sure
+         what's on screen and what gets saved are always the same pixels,
+         because they now come from the identical draw call. -->
+    <video id="video" class="visually-hidden" autoplay playsinline muted></video>
     <img id="ghost-img" alt="">
 
     <div id="pin" aria-hidden="true">

@@ -84,6 +84,7 @@ function cacheDom() {
 
     stage: id('stage'),
     frame: id('frame'),
+    previewCanvas: id('preview-canvas'),
     video: id('video'),
     ghostImg: id('ghost-img'),
     pin: id('pin'),
@@ -143,14 +144,15 @@ function debugSnapshot() {
   const crop = vw && vh ? computeCropRect(vw, vh, ratio) : null;
   const lines = [
     'aspect setting: ' + state.settings.captureAspect + '  ratio: ' + ratio.toFixed(4),
-    'video native: ' + vw + 'x' + vh,
+    'video native (raw source): ' + vw + 'x' + vh,
     'frame box (css px): ' + Math.round(frameRect.width) + 'x' + Math.round(frameRect.height),
-    'isFrontFacing: ' + state.isFrontFacing + '  video transform: ' + (dom.video.style.transform || 'none'),
+    'preview canvas buffer (what is on screen): ' + dom.previewCanvas.width + 'x' + dom.previewCanvas.height,
+    'isFrontFacing: ' + state.isFrontFacing,
   ];
   if (crop) {
-    lines.push('crop sx,sy,sw,sh: ' + [crop.sx, crop.sy, crop.sw, crop.sh].map((n) => Math.round(n)).join(', '));
-    lines.push('=> saved canvas would be: ' + Math.round(crop.sw) + 'x' + Math.round(crop.sh));
+    lines.push('crop of raw source used for preview: ' + [crop.sx, crop.sy, crop.sw, crop.sh].map((n) => Math.round(n)).join(', '));
   }
+  lines.push('=> capture now copies the preview canvas directly (guaranteed match)');
   return lines.join('\n');
 }
 
@@ -262,11 +264,68 @@ function stopCamera() {
     state.stream.getTracks().forEach((t) => t.stop());
     state.stream = null;
   }
+  stopPreviewLoop();
 }
 
 function setMirror(mirrored) {
-  dom.video.style.transform = mirrored ? 'scaleX(-1)' : 'none';
-  applyGhostTransform(); // ghost's own mirror follows the same facingMode change
+  // The live preview's own mirroring is baked into renderPreviewFrame()'s
+  // canvas draw (see below), not a CSS transform — only the ghost overlay
+  // (a plain <img>) still needs a CSS mirror to match it.
+  applyGhostTransform();
+}
+
+// ---------------------------------------------------------------------
+// Live preview rendering
+//
+// The visible preview is a <canvas> that app.js repaints every animation
+// frame with the SAME crop + mirror math capturePhoto() uses, instead of
+// letting the browser render the raw <video> element with CSS
+// object-fit:cover + a CSS mirror transform. On some GPU/driver
+// combinations a mirrored, transformed <video> element can visually
+// paint a different (more tightly cropped) region than the frame data it
+// actually holds — the canvas.drawImage() capture path reads the correct
+// underlying frame, but the human eye was never looking at that; it was
+// looking at whatever the compositor painted, which could quietly drift
+// out of sync. Painting the preview from the same drawImage() call that
+// capture uses closes that gap by construction: there is no separate
+// "what's displayed" code path left to disagree with "what's saved".
+// ---------------------------------------------------------------------
+let previewRAF = null;
+
+function renderPreviewFrame() {
+  previewRAF = requestAnimationFrame(renderPreviewFrame);
+  const vw = dom.video.videoWidth, vh = dom.video.videoHeight;
+  if (!vw || !vh) return;
+
+  const cssW = dom.previewCanvas.clientWidth, cssH = dom.previewCanvas.clientHeight;
+  if (!cssW || !cssH) return;
+  const dpr = window.devicePixelRatio || 1;
+  const bufW = Math.max(1, Math.round(cssW * dpr));
+  const bufH = Math.max(1, Math.round(cssH * dpr));
+  if (dom.previewCanvas.width !== bufW || dom.previewCanvas.height !== bufH) {
+    dom.previewCanvas.width = bufW;
+    dom.previewCanvas.height = bufH;
+  }
+
+  const ratio = currentCaptureRatio();
+  const crop = computeCropRect(vw, vh, ratio);
+  const pctx = dom.previewCanvas.getContext('2d');
+  pctx.save();
+  if (state.isFrontFacing) {
+    pctx.translate(bufW, 0);
+    pctx.scale(-1, 1);
+  }
+  pctx.drawImage(dom.video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, bufW, bufH);
+  pctx.restore();
+}
+
+function startPreviewLoop() {
+  stopPreviewLoop();
+  previewRAF = requestAnimationFrame(renderPreviewFrame);
+}
+function stopPreviewLoop() {
+  if (previewRAF) cancelAnimationFrame(previewRAF);
+  previewRAF = null;
 }
 
 function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
@@ -313,6 +372,7 @@ async function startCamera(constraintsOverride) {
     hideStartOverlay();
     startMetering();
     startDebugPanel();
+    startPreviewLoop();
   } catch (err) {
     console.warn('getUserMedia failed', err);
     showStartOverlay(cameraErrorMessage(err));
@@ -691,34 +751,24 @@ async function buildComposite(beforeUrl, afterUrl) {
 }
 
 async function capturePhoto() {
-  const vw = dom.video.videoWidth, vh = dom.video.videoHeight;
-  if (!vw || !vh) { showToast('Camera not ready yet'); return; }
+  const pw = dom.previewCanvas.width, ph = dom.previewCanvas.height;
+  if (!pw || !ph) { showToast('Camera not ready yet'); return; }
 
-  // Crop the raw frame to the selected capture shape — same "fit inside,
-  // preserve ratio, center" math the live #frame box uses — so the saved
-  // photo matches what was actually framed on screen, not the raw sensor
-  // shape. "Full" doesn't mean "the whole uncropped sensor frame" (that
-  // was never shown to the user, and on most cameras has a different
-  // shape than the screen) — it means "whatever shape the screen/#frame
-  // currently is," so we derive the ratio from the live frame box itself.
-  const ratio = currentCaptureRatio();
-  const crop = computeCropRect(vw, vh, ratio);
-  const destW = Math.round(crop.sw), destH = Math.round(crop.sh);
   const captureDebugText = DEBUG
     ? 'AT CAPTURE — ' + debugSnapshot() + '\nisFrontFacing during capture: ' + state.isFrontFacing
     : '';
 
-  dom.captureCanvas.width = destW;
-  dom.captureCanvas.height = destH;
+  // Copy the live preview canvas verbatim — it's already cropped (and
+  // mirrored, if front-facing) exactly as shown on screen, via the same
+  // renderPreviewFrame() draw that's been painting it every frame. No
+  // separate crop/mirror math runs here, on purpose: that's what used to
+  // let the saved photo silently drift from what was actually on screen.
+  // Copying the canvas as-is means the saved photo IS the pixels the
+  // user was just looking at, by construction, not "should be" the same.
+  dom.captureCanvas.width = pw;
+  dom.captureCanvas.height = ph;
   const ctx = dom.captureCanvas.getContext('2d');
-  if (state.isFrontFacing) {
-    // Un-mirror so the saved file matches real-world orientation even
-    // though the live preview is mirrored for natural framing. The crop
-    // itself is centered, so mirroring afterwards doesn't shift it.
-    ctx.translate(destW, 0);
-    ctx.scale(-1, 1);
-  }
-  ctx.drawImage(dom.video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, destW, destH);
+  ctx.drawImage(dom.previewCanvas, 0, 0);
   let afterDataUrl = dom.captureCanvas.toDataURL('image/jpeg', 0.92);
 
   if (state.tilt.available && state.tilt.live && typeof piexif !== 'undefined') {

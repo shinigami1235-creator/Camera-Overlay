@@ -207,16 +207,28 @@ button {
   background: #000;
 }
 
-#video, #ghost-img {
+/* #preview-canvas is what's actually shown live — app.js continuously
+   draws the current camera frame into it (cropped + mirrored exactly the
+   same way capturePhoto() does), so what's on screen and what gets saved
+   are guaranteed to be the same pixels. The real <video> element (see
+   index.html) stays invisible; it only exists to receive the stream. */
+#preview-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+#ghost-img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-/* Mirroring is applied via JS to both #video and #ghost-img together (only
-   when the active camera is front-facing) so the live preview and the
-   ghost overlay stay in visual agreement — see setMirror() in app.js. */
+/* Mirroring the ghost overlay is applied via JS (only when the active
+   camera is front-facing) so it stays in visual agreement with the live
+   preview canvas — see setMirror() in app.js. */
 #ghost-img {
   opacity: 0;
   pointer-events: none;
