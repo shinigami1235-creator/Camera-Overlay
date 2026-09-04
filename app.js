@@ -656,8 +656,11 @@ async function capturePhoto() {
   // Crop the raw frame to the selected capture shape — same "fit inside,
   // preserve ratio, center" math the live #frame box uses — so the saved
   // photo matches what was actually framed on screen, not the raw sensor
-  // shape. "Full" (ratio === null) keeps the whole uncropped frame.
-  const ratio = ASPECT_RATIOS[state.settings.captureAspect];
+  // shape. "Full" doesn't mean "the whole uncropped sensor frame" (that
+  // was never shown to the user, and on most cameras has a different
+  // shape than the screen) — it means "whatever shape the screen/#frame
+  // currently is," so we derive the ratio from the live frame box itself.
+  const ratio = ASPECT_RATIOS[state.settings.captureAspect] || (dom.frame.clientWidth / dom.frame.clientHeight);
   const crop = computeCropRect(vw, vh, ratio);
   const destW = Math.round(crop.sw), destH = Math.round(crop.sh);
 
