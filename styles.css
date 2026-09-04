@@ -208,10 +208,14 @@ button {
 }
 
 /* #preview-canvas is what's actually shown live — app.js continuously
-   draws the current camera frame into it (cropped + mirrored exactly the
-   same way capturePhoto() does), so what's on screen and what gets saved
-   are guaranteed to be the same pixels. The real <video> element (see
-   index.html) stays invisible; it only exists to receive the stream. */
+   draws the current camera frame into it, cropped + mirrored with the
+   same math capturePhoto() uses, so on-screen framing always matches
+   what gets saved. It's deliberately sized to the screen (CSS px *
+   devicePixelRatio) for performance; capturePhoto() draws its own,
+   separate full-resolution copy straight from the video element rather
+   than reusing this canvas, so saved-photo quality isn't capped by
+   screen size. The real <video> element (see index.html) stays
+   invisible; it only exists to receive the stream. */
 #preview-canvas {
   position: absolute;
   inset: 0;
@@ -419,6 +423,58 @@ select {
   gap: var(--cs-3);
 }
 .ghost-tools .btn { flex: 1; }
+
+/* Outline intensity / color tuning, inside the "Ghost style" settings
+   section. Reuses the footer opacity-row's slider look, adapted to the
+   light settings-sheet background. */
+.settings-slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cs-3);
+  padding: var(--cs-2) 0;
+}
+.settings-slider-row label { font: var(--cs-body); white-space: nowrap; }
+.settings-slider-row input[type="range"] { flex: 1; accent-color: var(--cs-brand-gold); }
+.settings-slider-row .pct {
+  font-family: var(--cs-font-mono);
+  font-size: 12px;
+  width: 34px;
+  text-align: right;
+  color: var(--cs-n-700);
+}
+
+.outline-color-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cs-3);
+  padding: var(--cs-2) 0;
+}
+.outline-color-row label { font: var(--cs-body); }
+.outline-color-row input[type="color"] {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--cs-n-200);
+  border-radius: var(--cs-r-sm);
+  background: none;
+  cursor: pointer;
+}
+.outline-color-swatches {
+  display: flex;
+  gap: var(--cs-2);
+  margin-left: auto;
+}
+.outline-color-swatches .swatch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--cs-r-pill);
+  border: 2px solid var(--cs-n-200);
+}
+.outline-color-swatches .swatch.is-active {
+  border-color: var(--cs-primary-700);
+}
 
 .aspect-picker {
   display: flex;

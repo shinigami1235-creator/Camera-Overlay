@@ -32,8 +32,13 @@
          than the frame data it actually holds, which is what canvas
          capture reads. Painting the live preview from a canvas (below)
          instead of trusting the browser's own video rendering makes sure
-         what's on screen and what gets saved are always the same pixels,
-         because they now come from the identical draw call. -->
+         what's on screen and what gets saved always show the same crop
+         of the same source frame — both are canvas drawImage() calls
+         against this element using the identical crop rectangle
+         (app.js's computeCropRect()), never the browser's own on-screen
+         video compositing. Capture draws at the video's own full
+         resolution rather than reusing the (screen-sized) preview
+         canvas, so saved-photo quality isn't capped by the screen. -->
     <video id="video" class="visually-hidden" autoplay playsinline muted></video>
     <img id="ghost-img" alt="">
     <img id="ghost-outline-img" alt="">
@@ -169,6 +174,23 @@
     <button type="button" data-value="blend">Blend</button>
     <button type="button" data-value="outline">Outline</button>
     <button type="button" data-value="both" class="is-active">Both</button>
+  </div>
+
+  <div class="settings-slider-row">
+    <label for="outline-intensity-slider">Outline intensity</label>
+    <input type="range" id="outline-intensity-slider" min="20" max="100" step="5" value="85">
+    <span class="pct" id="outline-intensity-pct">85%</span>
+  </div>
+  <div class="outline-color-row">
+    <label for="outline-color-input">Outline color</label>
+    <input type="color" id="outline-color-input" value="#c89a3c">
+    <div class="outline-color-swatches" id="outline-color-swatches" role="group" aria-label="Outline color presets">
+      <button type="button" class="swatch is-active" data-color="#c89a3c" style="background:#c89a3c" aria-label="Gold"></button>
+      <button type="button" class="swatch" data-color="#ff4d5e" style="background:#ff4d5e" aria-label="Red"></button>
+      <button type="button" class="swatch" data-color="#00c2d1" style="background:#00c2d1" aria-label="Cyan"></button>
+      <button type="button" class="swatch" data-color="#39ff6a" style="background:#39ff6a" aria-label="Green"></button>
+      <button type="button" class="swatch" data-color="#ffffff" style="background:#ffffff" aria-label="White"></button>
+    </div>
   </div>
 
   <h3>Ghost alignment</h3>

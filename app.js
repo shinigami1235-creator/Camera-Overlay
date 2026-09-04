@@ -44,9 +44,9 @@ const ASPECT_RATIOS = {
 // focus on). Downsampled for speed — object-fit:cover scales the result
 // back up, and slightly soft lines are fine, even helpful, for legibility.
 const GHOST_OUTLINE_MAX_DIM = 480;
-const GHOST_OUTLINE_COLOR = [200, 154, 60]; // brand gold, matches the crosshair pin
-const GHOST_OUTLINE_THRESHOLD = 40;         // Sobel gradient magnitude cutoff
-const GHOST_OUTLINE_OPACITY = 0.85;         // fixed — thin lines read fine much brighter than a full-photo blend would
+const GHOST_OUTLINE_THRESHOLD = 40;         // Sobel gradient magnitude cutoff (fixed — line density, not user-facing)
+const DEFAULT_OUTLINE_COLOR = '#c89a3c';    // brand gold, matches the crosshair pin
+const DEFAULT_OUTLINE_INTENSITY = 85;       // % opacity of the outline layer
 
 // ---------------------------------------------------------------------
 // State
@@ -57,7 +57,7 @@ const state = {
   currentDeviceId: null,
   facingMode: 'environment',
   isFrontFacing: false,
-  before: { dataUrl: null, lum: null, tilt: null, hasFile: false },
+  before: { dataUrl: null, img: null, lum: null, tilt: null, hasFile: false },
   pin: { xPct: 50, yPct: 50 },
   // Manual correction for the ghost overlay, since the live camera stream
   // and an arbitrary uploaded before-photo can have different native
@@ -67,7 +67,10 @@ const state = {
   ghost: { offsetXPct: 0, offsetYPct: 0, scale: 1, flipped: false },
   tilt: { available: null, live: null, permissionNeeded: false },
   liveLum: null,
-  settings: { readout: 'both', opacity: 45, captureAspect: '3:4', ghostStyle: 'both' },
+  settings: {
+    readout: 'both', opacity: 45, captureAspect: '3:4', ghostStyle: 'both',
+    outlineIntensity: DEFAULT_OUTLINE_INTENSITY, outlineColor: DEFAULT_OUTLINE_COLOR,
+  },
   meterTimer: null,
   tiltProbeTimer: null,
   lastCaptured: null, // { afterDataUrl, compositeDataUrl }
@@ -115,6 +118,10 @@ function cacheDom() {
     readoutButtons: Array.from(document.querySelectorAll('#readout-picker button')),
     ghostStyleButtons: Array.from(document.querySelectorAll('#ghost-style-picker button')),
     aspectButtons: Array.from(document.querySelectorAll('#settings-sheet .aspect-picker button')),
+    outlineIntensitySlider: id('outline-intensity-slider'),
+    outlineIntensityPct: id('outline-intensity-pct'),
+    outlineColorInput: id('outline-color-input'),
+    outlineSwatches: Array.from(document.querySelectorAll('#outline-color-swatches .swatch')),
     cameraSelect: id('camera-select'),
     flipGhostBtn: id('flip-ghost-btn'),
     resetGhostBtn: id('reset-ghost-btn'),
@@ -161,9 +168,9 @@ function debugSnapshot() {
     'isFrontFacing: ' + state.isFrontFacing,
   ];
   if (crop) {
-    lines.push('crop of raw source used for preview: ' + [crop.sx, crop.sy, crop.sw, crop.sh].map((n) => Math.round(n)).join(', '));
+    lines.push('crop of raw source used for preview AND capture: ' + [crop.sx, crop.sy, crop.sw, crop.sh].map((n) => Math.round(n)).join(', '));
   }
-  lines.push('=> capture now copies the preview canvas directly (guaranteed match)');
+  lines.push('=> capture draws from the native video at full resolution using this same crop rect (framing matches; resolution is no longer capped by screen size)');
   return lines.join('\n');
 }
 
@@ -194,6 +201,15 @@ function applySettingsToUI() {
   dom.readoutButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.value === state.settings.readout));
   dom.aspectButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.aspect === state.settings.captureAspect));
   dom.ghostStyleButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.value === state.settings.ghostStyle));
+  dom.outlineIntensitySlider.value = state.settings.outlineIntensity;
+  dom.outlineIntensityPct.textContent = state.settings.outlineIntensity + '%';
+  dom.outlineColorInput.value = state.settings.outlineColor;
+  syncOutlineSwatches();
+}
+
+function syncOutlineSwatches() {
+  const c = (state.settings.outlineColor || '').toLowerCase();
+  dom.outlineSwatches.forEach((s) => s.classList.toggle('is-active', s.dataset.color.toLowerCase() === c));
 }
 
 // ---------------------------------------------------------------------
@@ -368,9 +384,19 @@ async function startCamera(constraintsOverride) {
     // Bias toward a 3:4-ish shape rather than 16:9 widescreen — closer to
     // what most phone camera apps shoot stills in by default, which
     // narrows (but can't fully close) the aspect-ratio gap against an
-    // arbitrary uploaded before-photo. No fixed width/height ideal here on
-    // purpose — that would fight the aspectRatio hint.
-    video: { facingMode: { ideal: state.facingMode }, aspectRatio: { ideal: 3 / 4 } },
+    // arbitrary uploaded before-photo. width/height are "ideal" hints too
+    // (not exact:), so they combine with aspectRatio rather than fighting
+    // it — the browser picks whichever supported camera mode best matches
+    // all three together. Leaving width/height unset was the actual bug:
+    // with no resolution hint at all, browsers commonly fall back to a low
+    // default capture mode (sometimes well under 1MP) even on phones whose
+    // camera can do far better, which is what made photos look grainy.
+    video: {
+      facingMode: { ideal: state.facingMode },
+      aspectRatio: { ideal: 3 / 4 },
+      width: { ideal: 3000 },
+      height: { ideal: 4000 },
+    },
     audio: false,
   };
   try {
@@ -417,7 +443,15 @@ function flipCamera() {
 }
 
 function switchToDevice(deviceId) {
-  startCamera({ video: { deviceId: { exact: deviceId }, aspectRatio: { ideal: 3 / 4 } }, audio: false });
+  startCamera({
+    video: {
+      deviceId: { exact: deviceId },
+      aspectRatio: { ideal: 3 / 4 },
+      width: { ideal: 3000 },
+      height: { ideal: 4000 },
+    },
+    audio: false,
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -436,12 +470,8 @@ function loadBeforeFromDataUrl(dataUrl) {
   img.onload = () => {
     dom.ghostImg.src = dataUrl;
     dom.ghostImg.classList.add('is-active');
-    try {
-      dom.ghostOutlineImg.src = computeGhostOutline(img);
-      dom.ghostOutlineImg.classList.add('is-active');
-    } catch (e) {
-      console.warn('ghost outline generation failed', e); // blend layer still works fine without it
-    }
+    state.before.img = img; // kept so the outline can be recolored later without re-decoding the photo
+    if (regenerateGhostOutline()) dom.ghostOutlineImg.classList.add('is-active');
     resetGhostTransform(); // a new photo starts centered/unscaled — old nudges shouldn't carry over
     state.ghost.flipped = false;
     applyGhostTransform();
@@ -469,7 +499,16 @@ function loadBeforeFromDataUrl(dataUrl) {
 // focus on or genuinely uncomfortable to look at; a clean outline gives
 // the same alignment guidance with far less visual competition against
 // the live camera feed.
-function computeGhostOutline(img) {
+// Converts a "#rrggbb" input into [r, g, b], falling back to the default
+// gold if the string is somehow malformed (e.g. an empty color input).
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return [200, 154, 60];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function computeGhostOutline(img, colorHex) {
   const scale = Math.min(1, GHOST_OUTLINE_MAX_DIM / Math.max(img.naturalWidth, img.naturalHeight));
   const w = Math.max(1, Math.round(img.naturalWidth * scale));
   const h = Math.max(1, Math.round(img.naturalHeight * scale));
@@ -489,7 +528,7 @@ function computeGhostOutline(img) {
   out.width = w; out.height = h;
   const octx = out.getContext('2d');
   const outImg = octx.createImageData(w, h);
-  const [r, g, b] = GHOST_OUTLINE_COLOR;
+  const [r, g, b] = hexToRgb(colorHex);
 
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
@@ -513,16 +552,33 @@ function computeGhostOutline(img) {
   return out.toDataURL('image/png'); // needs an alpha channel, so PNG not JPEG
 }
 
+// Re-runs edge detection against the cached before-photo Image using the
+// CURRENT outline color setting. Cheap enough (the image is downsampled to
+// GHOST_OUTLINE_MAX_DIM first) to call on every color change without any
+// debouncing. Returns true on success so callers can decide whether to
+// reveal the outline layer.
+function regenerateGhostOutline() {
+  if (!state.before.img) return false;
+  try {
+    dom.ghostOutlineImg.src = computeGhostOutline(state.before.img, state.settings.outlineColor);
+    return true;
+  } catch (e) {
+    console.warn('ghost outline generation failed', e); // blend layer still works fine without it
+    return false;
+  }
+}
+
 // Controls both ghost layers' visibility together: whether there's a
 // before-photo loaded at all, and which layer(s) the "Ghost style"
-// setting says to show. The blend layer still follows the opacity
-// slider; the outline uses its own fixed, higher opacity since thin
-// lines don't compete with the live view the way a full photo blend does.
+// setting says to show. Each layer has its own intensity control — the
+// blend layer follows the main "Ghost" opacity slider, the outline layer
+// follows its own "Outline intensity" slider (thin lines read fine much
+// brighter than a full-photo blend would, so the two aren't tied together).
 function applyGhostOpacity() {
   const hasFile = state.before.hasFile;
   const style = state.settings.ghostStyle;
   dom.ghostImg.style.opacity = (hasFile && style !== 'outline') ? (state.settings.opacity / 100) : 0;
-  dom.ghostOutlineImg.style.opacity = (hasFile && style !== 'blend') ? GHOST_OUTLINE_OPACITY : 0;
+  dom.ghostOutlineImg.style.opacity = (hasFile && style !== 'blend') ? (state.settings.outlineIntensity / 100) : 0;
 }
 
 function computeLuminance(ctx, w, h) {
@@ -831,24 +887,40 @@ async function buildComposite(beforeUrl, afterUrl) {
 }
 
 async function capturePhoto() {
-  const pw = dom.previewCanvas.width, ph = dom.previewCanvas.height;
-  if (!pw || !ph) { showToast('Camera not ready yet'); return; }
+  const vw = dom.video.videoWidth, vh = dom.video.videoHeight;
+  if (!vw || !vh) { showToast('Camera not ready yet'); return; }
 
   const captureDebugText = DEBUG
     ? 'AT CAPTURE — ' + debugSnapshot() + '\nisFrontFacing during capture: ' + state.isFrontFacing
     : '';
 
-  // Copy the live preview canvas verbatim — it's already cropped (and
-  // mirrored, if front-facing) exactly as shown on screen, via the same
-  // renderPreviewFrame() draw that's been painting it every frame. No
-  // separate crop/mirror math runs here, on purpose: that's what used to
-  // let the saved photo silently drift from what was actually on screen.
-  // Copying the canvas as-is means the saved photo IS the pixels the
-  // user was just looking at, by construction, not "should be" the same.
-  dom.captureCanvas.width = pw;
-  dom.captureCanvas.height = ph;
+  // Draw straight from the camera's native video frame, at the frame's
+  // own full resolution — NOT a copy of the on-screen preview canvas.
+  // The preview canvas is deliberately capped to the screen's own
+  // display size (CSS px * devicePixelRatio) since that's all a screen
+  // can show, but reusing that same small buffer as the SAVED photo was
+  // quietly capping every capture's resolution to whatever the phone's
+  // screen happened to need, not what the camera sensor could deliver —
+  // this is what made real-device captures look soft/grainy. Framing
+  // still matches the preview exactly: both draws read the same
+  // underlying decoded video frame via canvas drawImage() (never the
+  // browser's own on-screen video compositing, which is what caused the
+  // original alignment bug) using the identical computeCropRect()
+  // rectangle — only the destination canvas size differs.
+  const ratio = currentCaptureRatio();
+  const crop = computeCropRect(vw, vh, ratio);
+  const captureW = Math.max(1, Math.round(crop.sw));
+  const captureH = Math.max(1, Math.round(crop.sh));
+  dom.captureCanvas.width = captureW;
+  dom.captureCanvas.height = captureH;
   const ctx = dom.captureCanvas.getContext('2d');
-  ctx.drawImage(dom.previewCanvas, 0, 0);
+  ctx.save();
+  if (state.isFrontFacing) {
+    ctx.translate(captureW, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.drawImage(dom.video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, captureW, captureH);
+  ctx.restore();
   let afterDataUrl = dom.captureCanvas.toDataURL('image/jpeg', 0.92);
 
   if (state.tilt.available && state.tilt.live && typeof piexif !== 'undefined') {
@@ -1026,6 +1098,30 @@ function wireControls() {
       state.settings.ghostStyle = btn.dataset.value;
       dom.ghostStyleButtons.forEach((b) => b.classList.toggle('is-active', b === btn));
       applyGhostOpacity();
+      saveSettings();
+    });
+  });
+
+  dom.outlineIntensitySlider.addEventListener('input', () => {
+    state.settings.outlineIntensity = Number(dom.outlineIntensitySlider.value);
+    dom.outlineIntensityPct.textContent = state.settings.outlineIntensity + '%';
+    applyGhostOpacity();
+    saveSettings();
+  });
+
+  dom.outlineColorInput.addEventListener('input', () => {
+    state.settings.outlineColor = dom.outlineColorInput.value;
+    syncOutlineSwatches();
+    regenerateGhostOutline();
+    saveSettings();
+  });
+
+  dom.outlineSwatches.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.settings.outlineColor = btn.dataset.color;
+      dom.outlineColorInput.value = btn.dataset.color;
+      syncOutlineSwatches();
+      regenerateGhostOutline();
       saveSettings();
     });
   });
