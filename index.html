@@ -36,6 +36,7 @@
          because they now come from the identical draw call. -->
     <video id="video" class="visually-hidden" autoplay playsinline muted></video>
     <img id="ghost-img" alt="">
+    <img id="ghost-outline-img" alt="">
 
     <div id="pin" aria-hidden="true">
       <svg viewBox="0 0 56 56" fill="none">
@@ -139,7 +140,7 @@
 
   <h3>Readout style</h3>
   <p class="desc">How tilt &amp; lighting guidance is shown while framing a shot.</p>
-  <div class="segmented" role="group" aria-label="Readout style">
+  <div id="readout-picker" class="segmented" role="group" aria-label="Readout style">
     <button type="button" data-value="indicator">Indicator</button>
     <button type="button" data-value="numeric">Numeric</button>
     <button type="button" data-value="both" class="is-active">Both</button>
@@ -154,12 +155,20 @@
   <h3>Photo shape</h3>
   <p class="desc">Crops both the live view and the capture to this shape. Matching your before-photo's shape here also makes the ghost line up more easily.</p>
   <div class="aspect-picker" role="group" aria-label="Photo shape">
-    <button type="button" data-aspect="native" class="is-active">Full</button>
+    <button type="button" data-aspect="native">Full</button>
     <button type="button" data-aspect="1:1">1:1</button>
-    <button type="button" data-aspect="3:4">3:4</button>
+    <button type="button" data-aspect="3:4" class="is-active">3:4</button>
     <button type="button" data-aspect="4:3">4:3</button>
     <button type="button" data-aspect="9:16">9:16</button>
     <button type="button" data-aspect="16:9">16:9</button>
+  </div>
+
+  <h3>Ghost style</h3>
+  <p class="desc">How the before-photo overlay is shown. If the blended photo is hard to focus on or feels straining to look at, try Outline — it traces just the edges instead of blending the whole photo in.</p>
+  <div id="ghost-style-picker" class="segmented" role="group" aria-label="Ghost style">
+    <button type="button" data-value="blend">Blend</button>
+    <button type="button" data-value="outline">Outline</button>
+    <button type="button" data-value="both" class="is-active">Both</button>
   </div>
 
   <h3>Ghost alignment</h3>

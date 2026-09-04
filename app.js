@@ -39,6 +39,15 @@ const ASPECT_RATIOS = {
   '16:9': 16 / 9,
 };
 
+// Ghost outline generation (edge-detected line-art version of the
+// before-photo, for anyone who finds the translucent blend hard to
+// focus on). Downsampled for speed — object-fit:cover scales the result
+// back up, and slightly soft lines are fine, even helpful, for legibility.
+const GHOST_OUTLINE_MAX_DIM = 480;
+const GHOST_OUTLINE_COLOR = [200, 154, 60]; // brand gold, matches the crosshair pin
+const GHOST_OUTLINE_THRESHOLD = 40;         // Sobel gradient magnitude cutoff
+const GHOST_OUTLINE_OPACITY = 0.85;         // fixed — thin lines read fine much brighter than a full-photo blend would
+
 // ---------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------
@@ -58,7 +67,7 @@ const state = {
   ghost: { offsetXPct: 0, offsetYPct: 0, scale: 1, flipped: false },
   tilt: { available: null, live: null, permissionNeeded: false },
   liveLum: null,
-  settings: { readout: 'both', opacity: 45, captureAspect: 'native' },
+  settings: { readout: 'both', opacity: 45, captureAspect: '3:4', ghostStyle: 'both' },
   meterTimer: null,
   tiltProbeTimer: null,
   lastCaptured: null, // { afterDataUrl, compositeDataUrl }
@@ -87,6 +96,7 @@ function cacheDom() {
     previewCanvas: id('preview-canvas'),
     video: id('video'),
     ghostImg: id('ghost-img'),
+    ghostOutlineImg: id('ghost-outline-img'),
     pin: id('pin'),
     meterCanvas: id('meter-canvas'),
     captureCanvas: id('capture-canvas'),
@@ -102,7 +112,8 @@ function cacheDom() {
 
     settingsSheet: id('settings-sheet'),
     settingsClose: id('settings-close'),
-    readoutButtons: Array.from(document.querySelectorAll('#settings-sheet .segmented button')),
+    readoutButtons: Array.from(document.querySelectorAll('#readout-picker button')),
+    ghostStyleButtons: Array.from(document.querySelectorAll('#ghost-style-picker button')),
     aspectButtons: Array.from(document.querySelectorAll('#settings-sheet .aspect-picker button')),
     cameraSelect: id('camera-select'),
     flipGhostBtn: id('flip-ghost-btn'),
@@ -182,6 +193,7 @@ function applySettingsToUI() {
   dom.opacityPct.textContent = state.settings.opacity + '%';
   dom.readoutButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.value === state.settings.readout));
   dom.aspectButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.aspect === state.settings.captureAspect));
+  dom.ghostStyleButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.value === state.settings.ghostStyle));
 }
 
 // ---------------------------------------------------------------------
@@ -337,8 +349,10 @@ function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
 function applyGhostTransform() {
   const flip = state.ghost.flipped ? -1 : 1;
   const scaleX = flip * state.ghost.scale;
-  dom.ghostImg.style.transform =
-    'translate(' + state.ghost.offsetXPct + '%, ' + state.ghost.offsetYPct + '%) scale(' + scaleX + ', ' + state.ghost.scale + ')';
+  const t = 'translate(' + state.ghost.offsetXPct + '%, ' + state.ghost.offsetYPct + '%) scale(' + scaleX + ', ' + state.ghost.scale + ')';
+  // Both ghost layers (blend + outline) always move together.
+  dom.ghostImg.style.transform = t;
+  dom.ghostOutlineImg.style.transform = t;
 }
 
 function resetGhostTransform() {
@@ -422,10 +436,16 @@ function loadBeforeFromDataUrl(dataUrl) {
   img.onload = () => {
     dom.ghostImg.src = dataUrl;
     dom.ghostImg.classList.add('is-active');
-    applyGhostOpacity();
+    try {
+      dom.ghostOutlineImg.src = computeGhostOutline(img);
+      dom.ghostOutlineImg.classList.add('is-active');
+    } catch (e) {
+      console.warn('ghost outline generation failed', e); // blend layer still works fine without it
+    }
     resetGhostTransform(); // a new photo starts centered/unscaled — old nudges shouldn't carry over
     state.ghost.flipped = false;
     applyGhostTransform();
+    applyGhostOpacity();
 
     state.before.dataUrl = dataUrl;
     state.before.hasFile = true;
@@ -442,8 +462,67 @@ function loadBeforeFromDataUrl(dataUrl) {
   img.src = dataUrl;
 }
 
+// Traces just the edges of the before-photo into a transparent-background
+// line drawing (classic Sobel gradient magnitude, thresholded), instead
+// of blending the whole photo's color/detail translucently over the live
+// view. Some people find a full translucent double-exposure hard to
+// focus on or genuinely uncomfortable to look at; a clean outline gives
+// the same alignment guidance with far less visual competition against
+// the live camera feed.
+function computeGhostOutline(img) {
+  const scale = Math.min(1, GHOST_OUTLINE_MAX_DIM / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
+
+  const src = document.createElement('canvas');
+  src.width = w; src.height = h;
+  const sctx = src.getContext('2d');
+  sctx.drawImage(img, 0, 0, w, h);
+  const srcData = sctx.getImageData(0, 0, w, h).data;
+
+  const gray = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < srcData.length; i += 4, p++) {
+    gray[p] = 0.299 * srcData[i] + 0.587 * srcData[i + 1] + 0.114 * srcData[i + 2];
+  }
+
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const outImg = octx.createImageData(w, h);
+  const [r, g, b] = GHOST_OUTLINE_COLOR;
+
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gx = -gray[i - w - 1] + gray[i - w + 1]
+        - 2 * gray[i - 1] + 2 * gray[i + 1]
+        - gray[i + w - 1] + gray[i + w + 1];
+      const gy = -gray[i - w - 1] - 2 * gray[i - w] - gray[i - w + 1]
+        + gray[i + w - 1] + 2 * gray[i + w] + gray[i + w + 1];
+      const mag = Math.sqrt(gx * gx + gy * gy);
+      if (mag > GHOST_OUTLINE_THRESHOLD) {
+        const o = i * 4;
+        outImg.data[o] = r;
+        outImg.data[o + 1] = g;
+        outImg.data[o + 2] = b;
+        outImg.data[o + 3] = Math.min(255, mag);
+      }
+    }
+  }
+  octx.putImageData(outImg, 0, 0);
+  return out.toDataURL('image/png'); // needs an alpha channel, so PNG not JPEG
+}
+
+// Controls both ghost layers' visibility together: whether there's a
+// before-photo loaded at all, and which layer(s) the "Ghost style"
+// setting says to show. The blend layer still follows the opacity
+// slider; the outline uses its own fixed, higher opacity since thin
+// lines don't compete with the live view the way a full photo blend does.
 function applyGhostOpacity() {
-  dom.ghostImg.style.opacity = state.before.hasFile ? (state.settings.opacity / 100) : 0;
+  const hasFile = state.before.hasFile;
+  const style = state.settings.ghostStyle;
+  dom.ghostImg.style.opacity = (hasFile && style !== 'outline') ? (state.settings.opacity / 100) : 0;
+  dom.ghostOutlineImg.style.opacity = (hasFile && style !== 'blend') ? GHOST_OUTLINE_OPACITY : 0;
 }
 
 function computeLuminance(ctx, w, h) {
@@ -938,6 +1017,15 @@ function wireControls() {
       state.settings.captureAspect = btn.dataset.aspect;
       dom.aspectButtons.forEach((b) => b.classList.toggle('is-active', b === btn));
       applyFrameSize();
+      saveSettings();
+    });
+  });
+
+  dom.ghostStyleButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.settings.ghostStyle = btn.dataset.value;
+      dom.ghostStyleButtons.forEach((b) => b.classList.toggle('is-active', b === btn));
+      applyGhostOpacity();
       saveSettings();
     });
   });

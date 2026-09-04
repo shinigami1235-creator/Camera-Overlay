@@ -219,22 +219,24 @@ button {
   height: 100%;
   display: block;
 }
-#ghost-img {
+/* #ghost-img is the translucent full-photo blend; #ghost-outline-img is
+   an edge-traced line-art version of the same photo, generated once in
+   JS when a before-photo loads (see computeGhostOutline() in app.js) —
+   easier to lock onto for anyone who finds a blended double-exposure
+   hard to focus on or straining to look at. Both layers share the same
+   position/scale — app.js keeps their transforms in sync — and which
+   one(s) are visible is controlled by the "Ghost style" setting. */
+#ghost-img, #ghost-outline-img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
-}
-/* Mirroring the ghost overlay is applied via JS (only when the active
-   camera is front-facing) so it stays in visual agreement with the live
-   preview canvas — see setMirror() in app.js. */
-#ghost-img {
   opacity: 0;
   pointer-events: none;
   display: none;
 }
-#ghost-img.is-active { display: block; }
+#ghost-img.is-active, #ghost-outline-img.is-active { display: block; }
 
 /* Crosshair / landmark pin */
 #pin {
