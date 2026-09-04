@@ -543,16 +543,22 @@ function showReviewSheet() {
 }
 
 // ---------------------------------------------------------------------
-// Saving (camera roll via Web Share on phones/tablets, plain download on
-// desktop — Windows/macOS/Linux share dialogs are app-to-app and have no
-// built-in "save to a folder" target the way iOS/Android share sheets do,
-// so routing desktop through Web Share just adds a dead-end extra step).
+// Saving (camera roll via Web Share on iOS, plain download everywhere
+// else). iOS's share sheet has a built-in "Save Image" action baked into
+// the OS, so Web Share genuinely helps there. Android's share sheet has no
+// equivalent — it just lists whatever apps are installed (Messenger, a
+// vault app, etc.), none of which reliably saves to the actual gallery —
+// and desktop share dialogs are app-to-app with no save option at all. So
+// Android and desktop both get a direct download instead, which lands
+// predictably in the Downloads folder without asking the user to guess
+// which app in a share list will do the right thing.
 // ---------------------------------------------------------------------
-function isMobileDevice() {
-  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') {
-    return navigator.userAgentData.mobile;
-  }
-  return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+function isIOSDevice() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/.test(ua)) return true;
+  // iPadOS 13+ Safari reports itself as desktop Safari by default.
+  if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return true;
+  return false;
 }
 
 function filename(kind) {
@@ -575,7 +581,7 @@ async function saveImageDataUrl(dataUrl, name) {
   const blob = dataUrlToBlob(dataUrl);
   const file = new File([blob], name, { type: 'image/jpeg' });
 
-  if (isMobileDevice() && navigator.canShare && navigator.canShare({ files: [file] })) {
+  if (isIOSDevice() && navigator.canShare && navigator.canShare({ files: [file] })) {
     try {
       await navigator.share({ files: [file] });
       showToast('Choose "Save Image" to add it to your photos');
@@ -671,10 +677,10 @@ function wireControls() {
 }
 
 function applyPlatformLabels() {
-  const mobile = isMobileDevice();
-  dom.saveBothBtn.textContent = mobile ? 'Save Both to Photos' : 'Download Both';
-  dom.saveAfterBtn.textContent = mobile ? 'Save Photo Only' : 'Download Photo Only';
-  dom.saveCompositeBtn.textContent = mobile ? 'Save Comparison Only' : 'Download Comparison Only';
+  const ios = isIOSDevice();
+  dom.saveBothBtn.textContent = ios ? 'Save Both to Photos' : 'Download Both';
+  dom.saveAfterBtn.textContent = ios ? 'Save Photo Only' : 'Download Photo Only';
+  dom.saveCompositeBtn.textContent = ios ? 'Save Comparison Only' : 'Download Comparison Only';
 }
 
 function registerServiceWorker() {
