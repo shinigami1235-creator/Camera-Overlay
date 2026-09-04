@@ -1,0 +1,500 @@
+/* Camera Overlay — Cygnus Solutions
+   Tokens lifted from Cygnus-Solutions-Tokens-standalone.html */
+
+:root {
+  --cs-brand-navy: #101C2B;
+  --cs-brand-gold: #C89A3C;
+  --cs-brand-gold-light: #E0B45A;
+  --cs-brand-gold-wash: #F6EEDC;
+
+  --cs-primary-50: #F2F7FB;
+  --cs-primary-100: #E3EDF6;
+  --cs-primary-400: #1F5E99;
+  --cs-primary-600: #14497A;
+  --cs-primary-700: #0F3A62;
+  --cs-primary-800: #0B2C4B;
+
+  --cs-n-000: #FFFFFF;
+  --cs-n-025: #F7F8FA;
+  --cs-n-050: #F1F3F6;
+  --cs-n-100: #E4E8ED;
+  --cs-n-200: #CFD5DE;
+  --cs-n-300: #AEB7C4;
+  --cs-n-500: #6B7686;
+  --cs-n-700: #414B59;
+  --cs-n-900: #1B222C;
+
+  --cs-success: #0E6B4F;
+  --cs-success-tint: #E4F1EC;
+  --cs-warning: #8A5A00;
+  --cs-warning-tint: #FBF0DA;
+  --cs-danger: #A31B1B;
+  --cs-danger-tint: #FBE9E9;
+
+  --cs-font: "IBM Plex Sans", system-ui, sans-serif;
+  --cs-font-mono: "IBM Plex Mono", monospace;
+  --cs-font-brand: Cinzel, Georgia, serif;
+
+  --cs-1: 4px;  --cs-2: 8px;  --cs-3: 12px; --cs-4: 16px;
+  --cs-5: 20px; --cs-6: 24px; --cs-8: 32px; --cs-10: 40px;
+
+  --cs-r-sm: 4px; --cs-r-md: 6px; --cs-r-lg: 10px;
+  --cs-r-pill: 999px; --cs-r-sheet: 16px;
+
+  --cs-target: 48px; --cs-target-dense: 40px;
+
+  --cs-e2: 0 2px 8px rgba(16,28,43,.08);
+  --cs-e3: 0 8px 28px rgba(16,28,43,.16);
+  --cs-scrim: rgba(16,28,43,.55);
+
+  /* Controls stay a comfortable phone-app-width column and center
+     themselves on tablets/desktops; the camera view stays full-bleed
+     behind them regardless of screen width. */
+  --cs-chrome-max: 560px;
+
+  --cs-display: 600 34px/40px var(--cs-font);
+  --cs-heading: 600 21px/28px var(--cs-font);
+  --cs-label:   500 14px/20px var(--cs-font);
+  --cs-body:    400 17px/26px var(--cs-font);
+  --cs-micro:   600 12px/16px var(--cs-font);
+
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  height: 100dvh; /* dynamic viewport height: stays accurate as mobile browser toolbars show/hide */
+  background: var(--cs-brand-navy);
+  color: var(--cs-n-000);
+  font-family: var(--cs-font);
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  overscroll-behavior: none;
+}
+
+body { display: flex; flex-direction: column; }
+
+button {
+  font-family: var(--cs-font);
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ---------- Top bar ---------- */
+/* The gradient scrim stays full-bleed (so the top edge reads on any width
+   video behind it); the actual controls inside it are capped to a
+   comfortable app-width column and centered, so they don't stretch out
+   to the edges of a tablet or desktop window. */
+#top-bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 20;
+  padding: max(var(--cs-3), env(safe-area-inset-top)) var(--cs-4) var(--cs-3);
+  background: linear-gradient(to bottom, rgba(16,28,43,.75), rgba(16,28,43,0));
+  pointer-events: none;
+}
+.top-bar-inner {
+  max-width: var(--cs-chrome-max);
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.top-bar-inner > * { pointer-events: auto; }
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--cs-2);
+  font: var(--cs-label);
+  letter-spacing: .04em;
+  color: var(--cs-n-000);
+}
+.brand img { width: 24px; height: 24px; }
+.brand span { font-family: var(--cs-font-brand); font-weight: 600; font-size: 15px; }
+
+.icon-btn {
+  width: var(--cs-target-dense);
+  height: var(--cs-target-dense);
+  border-radius: var(--cs-r-pill);
+  background: rgba(16,28,43,.55);
+  color: var(--cs-n-000);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+.icon-btn:active { background: rgba(16,28,43,.8); }
+.icon-btn svg { width: 20px; height: 20px; }
+
+/* ---------- Status badges ---------- */
+#status-row {
+  position: absolute;
+  top: 64px;
+  left: 0; right: 0;
+  z-index: 20;
+  max-width: var(--cs-chrome-max);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--cs-2);
+  padding: 0 var(--cs-4);
+  pointer-events: none;
+}
+
+.badge {
+  display: none;
+  align-items: center;
+  gap: var(--cs-2);
+  background: rgba(16,28,43,.62);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: var(--cs-r-pill);
+  padding: 6px var(--cs-3) 6px var(--cs-2);
+  font: var(--cs-micro);
+  letter-spacing: .02em;
+  color: var(--cs-n-000);
+}
+.badge.is-visible { display: inline-flex; }
+
+.badge .dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--cs-n-300);
+  flex: none;
+  box-shadow: 0 0 0 3px rgba(255,255,255,.06);
+}
+.badge.status-green .dot { background: var(--cs-success); }
+.badge.status-yellow .dot { background: var(--cs-warning); }
+.badge.status-red .dot { background: var(--cs-danger); }
+.badge.status-na .dot { background: var(--cs-n-300); }
+
+.badge .num {
+  font-family: var(--cs-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--cs-n-100);
+}
+.badge.hide-indicator .dot { display: none; }
+.badge.hide-numeric .num { display: none; }
+
+/* ---------- Camera stage ---------- */
+#stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: #000;
+  touch-action: none;
+}
+
+#video, #ghost-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* Mirroring is applied via JS to both #video and #ghost-img together (only
+   when the active camera is front-facing) so the live preview and the
+   ghost overlay stay in visual agreement — see setMirror() in app.js. */
+#ghost-img {
+  opacity: 0;
+  pointer-events: none;
+  display: none;
+}
+#ghost-img.is-active { display: block; }
+
+/* Crosshair / landmark pin */
+#pin {
+  position: absolute;
+  width: 56px; height: 56px;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 15;
+  touch-action: none;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,.6));
+}
+#pin svg { width: 100%; height: 100%; }
+#pin.is-dragging { opacity: .85; }
+
+/* ---------- Bottom control bar ---------- */
+/* Same pattern as #top-bar: the gradient scrim stays full-bleed, the
+   actual controls inside are capped and centered. */
+#control-bar {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  z-index: 20;
+  padding: var(--cs-3) var(--cs-4) max(var(--cs-4), env(safe-area-inset-bottom));
+  background: linear-gradient(to top, rgba(16,28,43,.85), rgba(16,28,43,0));
+}
+.control-bar-inner {
+  max-width: var(--cs-chrome-max);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cs-3);
+}
+
+.opacity-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cs-3);
+  background: rgba(16,28,43,.5);
+  border-radius: var(--cs-r-pill);
+  padding: var(--cs-2) var(--cs-4);
+}
+.opacity-row label { font: var(--cs-micro); color: var(--cs-n-200); white-space: nowrap; }
+.opacity-row input[type="range"] { flex: 1; accent-color: var(--cs-brand-gold); }
+.opacity-row .pct { font-family: var(--cs-font-mono); font-size: 12px; width: 34px; text-align: right; color: var(--cs-n-100); }
+
+.action-row {
+  display: grid;
+  grid-template-columns: var(--cs-target) 1fr var(--cs-target);
+  align-items: center;
+  gap: var(--cs-4);
+}
+
+#load-before-btn, #flip-cam-btn {
+  width: var(--cs-target);
+  height: var(--cs-target);
+  border-radius: var(--cs-r-pill);
+  background: rgba(255,255,255,.12);
+  color: var(--cs-n-000);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#load-before-btn svg, #flip-cam-btn svg { width: 22px; height: 22px; }
+
+#shutter-btn {
+  justify-self: center;
+  width: 72px; height: 72px;
+  border-radius: 50%;
+  background: var(--cs-n-000);
+  border: 4px solid rgba(255,255,255,.35);
+  position: relative;
+}
+#shutter-btn::after {
+  content: "";
+  position: absolute; inset: 6px;
+  border-radius: 50%;
+  background: var(--cs-brand-gold);
+  transition: transform .1s ease;
+}
+#shutter-btn:active::after { transform: scale(.85); }
+
+.hint {
+  text-align: center;
+  font: var(--cs-micro);
+  color: var(--cs-n-300);
+}
+
+/* ---------- Sheets (settings / review) ---------- */
+.sheet-scrim {
+  position: fixed; inset: 0;
+  background: var(--cs-scrim);
+  z-index: 40;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease;
+}
+.sheet-scrim.is-open { opacity: 1; pointer-events: auto; }
+
+.sheet {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 41;
+  max-width: var(--cs-chrome-max);
+  margin-inline: auto;
+  background: var(--cs-n-025);
+  color: var(--cs-n-900);
+  border-radius: var(--cs-r-sheet) var(--cs-r-sheet) 0 0;
+  box-shadow: var(--cs-e3);
+  padding: var(--cs-5) var(--cs-5) max(var(--cs-6), env(safe-area-inset-bottom));
+  max-height: 82vh;
+  overflow-y: auto;
+  transform: translateY(100%);
+  transition: transform .22s ease;
+}
+.sheet.is-open { transform: translateY(0); }
+
+.sheet h2 {
+  font: var(--cs-heading);
+  margin: 0 0 var(--cs-4);
+  color: var(--cs-brand-navy);
+}
+.sheet h3 {
+  font: var(--cs-label);
+  color: var(--cs-n-700);
+  margin: var(--cs-5) 0 var(--cs-2);
+}
+.sheet p.desc { font: var(--cs-micro); color: var(--cs-n-500); margin: 2px 0 var(--cs-3); }
+
+.sheet-close {
+  position: absolute;
+  top: var(--cs-4); right: var(--cs-4);
+  width: var(--cs-target-dense); height: var(--cs-target-dense);
+  border-radius: var(--cs-r-pill);
+  background: var(--cs-n-100);
+  color: var(--cs-n-700);
+  display: flex; align-items: center; justify-content: center;
+}
+
+.segmented {
+  display: flex;
+  background: var(--cs-n-100);
+  border-radius: var(--cs-r-md);
+  padding: 3px;
+  gap: 3px;
+}
+.segmented button {
+  flex: 1;
+  padding: 10px 8px;
+  border-radius: var(--cs-r-sm);
+  background: transparent;
+  color: var(--cs-n-700);
+  font: var(--cs-label);
+}
+.segmented button.is-active {
+  background: var(--cs-n-000);
+  color: var(--cs-primary-700);
+  box-shadow: var(--cs-e2);
+  font-weight: 600;
+}
+
+.select-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cs-3);
+  padding: var(--cs-2) 0;
+}
+.select-row label { font: var(--cs-body); }
+select {
+  font: var(--cs-label);
+  padding: var(--cs-2) var(--cs-3);
+  border-radius: var(--cs-r-md);
+  border: 1px solid var(--cs-n-200);
+  background: var(--cs-n-000);
+  color: var(--cs-n-900);
+  max-width: 60%;
+}
+
+.about-block {
+  margin-top: var(--cs-6);
+  padding-top: var(--cs-4);
+  border-top: 1px solid var(--cs-n-100);
+  font: var(--cs-micro);
+  color: var(--cs-n-500);
+}
+.about-block strong { color: var(--cs-n-700); font-family: var(--cs-font-brand); }
+
+/* ---------- Review sheet ---------- */
+#review-sheet { max-height: 92vh; }
+#review-images {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--cs-3);
+  margin-bottom: var(--cs-4);
+}
+#review-images figure { margin: 0; }
+#review-images img {
+  width: 100%;
+  border-radius: var(--cs-r-md);
+  display: block;
+  background: var(--cs-n-100);
+}
+#review-images figcaption {
+  font: var(--cs-micro);
+  color: var(--cs-n-500);
+  margin-top: var(--cs-1);
+  text-align: center;
+}
+.review-actions { display: flex; flex-direction: column; gap: var(--cs-2); }
+.btn {
+  height: var(--cs-target);
+  border-radius: var(--cs-r-pill);
+  font: var(--cs-label);
+  font-weight: 600;
+  display: flex; align-items: center; justify-content: center; gap: var(--cs-2);
+}
+.btn-primary { background: var(--cs-primary-700); color: var(--cs-n-000); }
+.btn-secondary { background: var(--cs-n-100); color: var(--cs-primary-700); }
+.btn-ghost { background: transparent; color: var(--cs-n-500); }
+
+/* ---------- Toast ---------- */
+#toast {
+  position: fixed;
+  left: 50%; bottom: 100px;
+  transform: translate(-50%, 12px);
+  z-index: 60;
+  background: var(--cs-n-900);
+  color: var(--cs-n-000);
+  font: var(--cs-label);
+  padding: 10px var(--cs-4);
+  border-radius: var(--cs-r-pill);
+  box-shadow: var(--cs-e3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease, transform .18s ease;
+}
+#toast.is-visible { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- Permission / start overlay ---------- */
+#start-overlay {
+  position: absolute; inset: 0;
+  z-index: 50;
+  background: var(--cs-brand-navy);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cs-4);
+  padding: var(--cs-6);
+  text-align: center;
+}
+#start-overlay.is-hidden { display: none; }
+#start-overlay img { width: 64px; height: 64px; }
+#start-overlay h1 {
+  font: var(--cs-display);
+  font-family: var(--cs-font-brand);
+  font-size: 26px;
+  margin: 0;
+  color: var(--cs-n-000);
+}
+#start-overlay p { font: var(--cs-body); color: var(--cs-n-200); max-width: 320px; margin: 0; }
+#start-overlay .btn-primary { padding: 0 var(--cs-6); background: var(--cs-brand-gold); color: var(--cs-brand-navy); }
+#start-overlay .error { color: var(--cs-brand-gold-light); font: var(--cs-micro); max-width: 320px; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap;
+}
+
+/* ---------- Short / landscape viewports ----------
+   A phone rotated to landscape (or a small tablet split-screened) has much
+   less vertical room — tighten the chrome so the camera stage doesn't get
+   squeezed down to a sliver. */
+@media (max-height: 480px) {
+  #status-row { top: 52px; gap: 6px; }
+  .control-bar-inner { gap: var(--cs-2); }
+  .opacity-row { padding: 4px var(--cs-3); }
+  #shutter-btn { width: 56px; height: 56px; }
+  .hint { display: none; }
+  #start-overlay { gap: var(--cs-2); padding: var(--cs-4); }
+  #start-overlay img { width: 44px; height: 44px; }
+}
+
+/* ---------- Larger tablets ----------
+   Give the capped control column a little more breathing room once
+   there's clearly space for it (iPad-and-up portrait/landscape). */
+@media (min-width: 700px) {
+  :root { --cs-chrome-max: 640px; }
+  #pin { width: 68px; height: 68px; }
+}

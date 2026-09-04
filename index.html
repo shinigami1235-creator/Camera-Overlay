@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Camera Overlay — Cygnus Solutions</title>
+
+<meta name="description" content="Ghost-overlay alignment camera for consistent before/after photography.">
+<meta name="theme-color" content="#0F3A62">
+
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/favicon-48.png" sizes="48x48" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Camera Overlay">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" autoplay playsinline muted></video>
+  <img id="ghost-img" alt="">
+
+  <div id="pin" aria-hidden="true">
+    <svg viewBox="0 0 56 56" fill="none">
+      <circle cx="28" cy="28" r="16" stroke="#C89A3C" stroke-width="2" opacity="0.9"/>
+      <line x1="28" y1="2" x2="28" y2="16" stroke="#C89A3C" stroke-width="2"/>
+      <line x1="28" y1="40" x2="28" y2="54" stroke="#C89A3C" stroke-width="2"/>
+      <line x1="2" y1="28" x2="16" y2="28" stroke="#C89A3C" stroke-width="2"/>
+      <line x1="40" y1="28" x2="54" y2="28" stroke="#C89A3C" stroke-width="2"/>
+      <circle cx="28" cy="28" r="2.5" fill="#C89A3C"/>
+    </svg>
+  </div>
+</div>
+
+<canvas id="meter-canvas" class="visually-hidden" width="64" height="48"></canvas>
+<canvas id="capture-canvas" class="visually-hidden"></canvas>
+
+<header id="top-bar">
+  <div class="top-bar-inner">
+    <div class="brand">
+      <img src="icons/icon-192.png" alt="">
+      <span>Cygnus Solutions</span>
+    </div>
+    <button id="settings-btn" class="icon-btn" type="button" aria-label="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<div id="status-row">
+  <div id="tilt-badge" class="badge status-na">
+    <span class="dot"></span>
+    <span class="label">Tilt</span>
+    <span class="num">—</span>
+  </div>
+  <div id="lighting-badge" class="badge status-na">
+    <span class="dot"></span>
+    <span class="label">Lighting</span>
+    <span class="num">—</span>
+  </div>
+  <button id="enable-tilt-btn" class="badge status-na is-visible" type="button" hidden style="pointer-events:auto;">
+    <span class="label">Tap to enable tilt guidance</span>
+  </button>
+</div>
+
+<footer id="control-bar">
+  <div class="control-bar-inner">
+    <div class="opacity-row">
+      <label for="opacity-slider">Ghost</label>
+      <input type="range" id="opacity-slider" min="0" max="90" step="1" value="45">
+      <span class="pct" id="opacity-pct">45%</span>
+    </div>
+
+    <div class="action-row">
+      <button id="load-before-btn" type="button" aria-label="Load before photo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="5" width="18" height="14" rx="2"/>
+          <circle cx="8.5" cy="10.5" r="1.5"/>
+          <path d="m21 15-5-5L5 21"/>
+        </svg>
+      </button>
+      <input type="file" id="before-file-input" accept="image/*" class="visually-hidden">
+
+      <button id="shutter-btn" type="button" aria-label="Capture photo"></button>
+
+      <button id="flip-cam-btn" type="button" aria-label="Switch camera" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 12a8 8 0 1 1-2.34-5.66"/>
+          <path d="M20 4v5h-5"/>
+        </svg>
+      </button>
+    </div>
+
+    <p class="hint">Load a before photo, align to the ghost, watch tilt &amp; lighting.</p>
+  </div>
+</footer>
+
+<!-- Start / permission overlay -->
+<div id="start-overlay">
+  <img src="icons/icon-192.png" alt="">
+  <h1>Camera Overlay</h1>
+  <p>Align every follow-up shot to the same landmark, tilt, and lighting as the original.</p>
+  <button id="start-camera-btn" class="btn btn-primary" type="button">Start Camera</button>
+  <p class="error" id="start-error"></p>
+</div>
+
+<!-- Sheets -->
+<div id="sheet-scrim" class="sheet-scrim"></div>
+
+<section id="settings-sheet" class="sheet" aria-label="Settings">
+  <button id="settings-close" class="sheet-close" type="button" aria-label="Close settings">✕</button>
+  <h2>Settings</h2>
+
+  <h3>Readout style</h3>
+  <p class="desc">How tilt &amp; lighting guidance is shown while framing a shot.</p>
+  <div class="segmented" role="group" aria-label="Readout style">
+    <button type="button" data-value="indicator">Indicator</button>
+    <button type="button" data-value="numeric">Numeric</button>
+    <button type="button" data-value="both" class="is-active">Both</button>
+  </div>
+
+  <h3>Camera</h3>
+  <div class="select-row">
+    <label for="camera-select">Active camera</label>
+    <select id="camera-select"></select>
+  </div>
+
+  <div class="about-block">
+    <strong>Cygnus Solutions</strong> · Camera Overlay<br>
+    No photos are stored in this app — before/after images are read from and saved back to your device's own photo library. Tilt guidance requires a photo that was captured with this app; lighting guidance works with any photo.
+  </div>
+</section>
+
+<section id="review-sheet" class="sheet" aria-label="Review capture">
+  <button id="review-close" class="sheet-close" type="button" aria-label="Close">✕</button>
+  <h2>Photo captured</h2>
+
+  <div id="review-images">
+    <figure id="review-composite-wrap" hidden>
+      <img id="review-composite-img" alt="Before and after comparison">
+      <figcaption>Before / after composite</figcaption>
+    </figure>
+    <figure>
+      <img id="review-after-img" alt="Captured photo">
+      <figcaption>New photo</figcaption>
+    </figure>
+  </div>
+
+  <div class="review-actions">
+    <button id="save-both-btn" class="btn btn-primary" type="button">Save Both to Photos</button>
+    <button id="save-after-btn" class="btn btn-secondary" type="button">Save Photo Only</button>
+    <button id="save-composite-btn" class="btn btn-secondary" type="button">Save Comparison Only</button>
+    <button id="retake-btn" class="btn btn-ghost" type="button">Retake</button>
+  </div>
+</section>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="vendor/piexif.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
