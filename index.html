@@ -90,6 +90,11 @@
     <span class="label">Lighting</span>
     <span class="num">—</span>
   </div>
+  <div id="zoom-badge" class="badge status-na hide-indicator">
+    <span class="dot"></span>
+    <span class="label">Zoom on capture</span>
+    <span class="num">—</span>
+  </div>
   <button id="enable-tilt-btn" class="badge status-na is-visible" type="button" hidden style="pointer-events:auto;">
     <span class="label">Tap to enable tilt guidance</span>
   </button>
@@ -207,6 +212,16 @@
   <div class="ghost-tools">
     <button id="flip-ghost-btn" class="btn btn-secondary" type="button">Flip Ghost</button>
     <button id="reset-ghost-btn" class="btn btn-secondary" type="button">Reset Position &amp; Zoom</button>
+  </div>
+
+  <div class="toggle-row">
+    <div class="toggle-row-text">
+      <label for="match-zoom-toggle">Match capture zoom to ghost scale</label>
+      <p class="desc">If a before-photo came from a different camera (like your phone's own camera app), it may show things closer or farther away than this live view does at the same distance — pinching the ghost to align it is really you correcting for that. Turn this on and the SAVED photo gets cropped by that same amount, so the output actually matches the before-photo's scale, not just the on-screen preview. Only crops tighter — it can't show more than the camera already sees, so it has no effect if the ghost was scaled up instead of down.</p>
+    </div>
+    <button id="match-zoom-toggle" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Match capture zoom to ghost scale">
+      <span class="toggle-knob"></span>
+    </button>
   </div>
 
   <div class="about-block">

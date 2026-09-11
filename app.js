@@ -72,6 +72,7 @@ const state = {
   settings: {
     readout: 'both', opacity: 45, captureAspect: '3:4', ghostStyle: 'both',
     outlineIntensity: DEFAULT_OUTLINE_INTENSITY, outlineColor: DEFAULT_OUTLINE_COLOR,
+    matchZoomToGhost: false,
   },
   meterTimer: null,
   tiltProbeTimer: null,
@@ -126,6 +127,8 @@ function cacheDom() {
     outlineIntensityPct: id('outline-intensity-pct'),
     outlineColorInput: id('outline-color-input'),
     outlineSwatches: Array.from(document.querySelectorAll('#outline-color-swatches .swatch')),
+    matchZoomToggle: id('match-zoom-toggle'),
+    zoomBadge: id('zoom-badge'),
     cameraSelect: id('camera-select'),
     flipGhostBtn: id('flip-ghost-btn'),
     resetGhostBtn: id('reset-ghost-btn'),
@@ -171,6 +174,7 @@ function debugSnapshot() {
     'preview canvas buffer (what is on screen): ' + dom.previewCanvas.width + 'x' + dom.previewCanvas.height,
     'isFrontFacing: ' + state.isFrontFacing,
     'ImageCapture.takePhoto() available: ' + !!state.imageCapture,
+    'ghost scale: ' + state.ghost.scale.toFixed(3) + '  match-zoom-to-ghost: ' + state.settings.matchZoomToGhost + '  effective zoom: ' + computeEffectiveZoom().toFixed(3),
   ];
   if (crop) {
     lines.push('crop of raw source used for preview AND capture: ' + [crop.sx, crop.sy, crop.sw, crop.sh].map((n) => Math.round(n)).join(', '));
@@ -210,6 +214,8 @@ function applySettingsToUI() {
   dom.outlineIntensityPct.textContent = state.settings.outlineIntensity + '%';
   dom.outlineColorInput.value = state.settings.outlineColor;
   syncOutlineSwatches();
+  dom.matchZoomToggle.setAttribute('aria-checked', String(state.settings.matchZoomToGhost));
+  updateZoomBadge();
 }
 
 function syncOutlineSwatches() {
@@ -375,6 +381,7 @@ function applyGhostTransform() {
   // Both ghost layers (blend + outline) always move together.
   dom.ghostImg.style.transform = t;
   dom.ghostOutlineImg.style.transform = t;
+  updateZoomBadge();
 }
 
 function resetGhostTransform() {
@@ -382,6 +389,29 @@ function resetGhostTransform() {
   state.ghost.offsetYPct = 0;
   state.ghost.scale = 1;
   applyGhostTransform();
+}
+
+// The ghost's manual pinch-to-scale (state.ghost.scale) is what a person
+// naturally does to visually line up a before-photo that has a different
+// effective field of view than this live camera (most commonly: the
+// before-photo came from the phone's own camera app, which often frames a
+// bit tighter or wider than a browser's raw camera stream at the same
+// distance). Shrinking the ghost to align it means the before-photo was
+// MORE zoomed in than the live view, so matching the actual saved output
+// to it means cropping the live capture tighter by the inverse factor.
+// There's no way to do the opposite (digitally "zoom out" past what the
+// sensor already captured), so a ghost scaled UP has no effect here.
+function computeEffectiveZoom() {
+  if (!state.settings.matchZoomToGhost || !state.before.hasFile) return 1;
+  if (!state.ghost.scale || state.ghost.scale <= 0) return 1;
+  return Math.max(1, 1 / state.ghost.scale);
+}
+
+function updateZoomBadge() {
+  const zoom = computeEffectiveZoom();
+  const active = zoom > 1.001;
+  dom.zoomBadge.classList.toggle('is-visible', active);
+  dom.zoomBadge.querySelector('.num').textContent = active ? zoom.toFixed(2) + '×' : '—';
 }
 
 async function startCamera(constraintsOverride) {
@@ -933,14 +963,21 @@ async function capturePhoto() {
       }
     }
 
+    // Extra crop-in to match the before-photo's effective zoom, derived
+    // from the ghost's own pinch-to-scale — see computeEffectiveZoom()'s
+    // comment. Only meaningful here (the live-camera capture path); the
+    // native-camera-app handoff isn't affected, since if the before-photo
+    // ALSO came from the native app, there's no cross-pipeline mismatch to
+    // correct for in the first place.
+    const zoom = computeEffectiveZoom();
     if (stillImg) {
-      drawCroppedToCaptureCanvas(stillImg, stillImg.naturalWidth, stillImg.naturalHeight, state.isFrontFacing);
+      drawCroppedToCaptureCanvas(stillImg, stillImg.naturalWidth, stillImg.naturalHeight, state.isFrontFacing, zoom);
     } else {
-      drawCroppedToCaptureCanvas(dom.video, vw, vh, state.isFrontFacing);
+      drawCroppedToCaptureCanvas(dom.video, vw, vh, state.isFrontFacing, zoom);
     }
 
     const afterDataUrl = dom.captureCanvas.toDataURL('image/jpeg', 0.92);
-    const debugText = captureDebugText + (DEBUG ? '\nused ImageCapture.takePhoto() still: ' + usedHQStill : '');
+    const debugText = captureDebugText + (DEBUG ? '\nused ImageCapture.takePhoto() still: ' + usedHQStill + '\nextra zoom to match before: ' + zoom.toFixed(3) : '');
     await finishCapture(afterDataUrl, state.tilt.available ? state.tilt.live : null, debugText);
   } finally {
     dom.shutterBtn.disabled = false;
@@ -955,10 +992,21 @@ async function capturePhoto() {
 // the same "Photo shape" setting. `mirror` re-applies the front-camera
 // flip that's baked into what the user was looking at live; a photo
 // handed back from a native camera app is already in its final
-// orientation and should be drawn with mirror=false.
-function drawCroppedToCaptureCanvas(sourceEl, srcW, srcH, mirror) {
+// orientation and should be drawn with mirror=false. `extraZoom` (default
+// 1, i.e. no-op) shrinks the crop rectangle around its own center by that
+// factor before drawing — see computeEffectiveZoom() — so the final image
+// is a tighter, more zoomed-in crop of the same source, not a resize.
+function drawCroppedToCaptureCanvas(sourceEl, srcW, srcH, mirror, extraZoom) {
   const ratio = currentCaptureRatio();
-  const crop = computeCropRect(srcW, srcH, ratio);
+  let crop = computeCropRect(srcW, srcH, ratio);
+  const zoom = extraZoom && extraZoom > 1 ? extraZoom : 1;
+  if (zoom > 1) {
+    const cx = crop.sx + crop.sw / 2;
+    const cy = crop.sy + crop.sh / 2;
+    const zw = crop.sw / zoom;
+    const zh = crop.sh / zoom;
+    crop = { sx: cx - zw / 2, sy: cy - zh / 2, sw: zw, sh: zh };
+  }
   const w = Math.max(1, Math.round(crop.sw));
   const h = Math.max(1, Math.round(crop.sh));
   dom.captureCanvas.width = w;
@@ -1240,6 +1288,13 @@ function wireControls() {
   dom.resetGhostBtn.addEventListener('click', () => {
     resetGhostTransform();
     showToast('Ghost position & zoom reset');
+  });
+
+  dom.matchZoomToggle.addEventListener('click', () => {
+    state.settings.matchZoomToGhost = !state.settings.matchZoomToGhost;
+    dom.matchZoomToggle.setAttribute('aria-checked', String(state.settings.matchZoomToGhost));
+    updateZoomBadge();
+    saveSettings();
   });
 
   dom.reviewClose.addEventListener('click', closeSheets);
