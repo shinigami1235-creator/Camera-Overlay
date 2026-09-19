@@ -138,9 +138,7 @@ function cacheDom() {
     reviewAfterImg: id('review-after-img'),
     reviewCompositeWrap: id('review-composite-wrap'),
     reviewCompositeImg: id('review-composite-img'),
-    saveAfterBtn: id('save-after-btn'),
-    saveCompositeBtn: id('save-composite-btn'),
-    saveBothBtn: id('save-both-btn'),
+    keepSaveBtn: id('keep-save-btn'),
     retakeBtn: id('retake-btn'),
 
     toast: id('toast'),
@@ -512,17 +510,24 @@ function pickBeforePhoto(file) {
 function loadBeforeFromDataUrl(dataUrl) {
   const img = new Image();
   img.onload = () => {
+    // Set BEFORE any apply*() call below — applyGhostOpacity() reads
+    // state.before.hasFile to decide whether the ghost should be visible
+    // at all, so setting it after was making the overlay compute itself
+    // as invisible (opacity 0) on a photo's first-ever load. It would
+    // then only appear on a SECOND upload, because hasFile was already
+    // left `true` from the first (silently-invisible) one.
+    state.before.dataUrl = dataUrl;
+    state.before.hasFile = true;
+    state.before.img = img; // kept so the outline can be recolored later without re-decoding the photo
+
     dom.ghostImg.src = dataUrl;
     dom.ghostImg.classList.add('is-active');
-    state.before.img = img; // kept so the outline can be recolored later without re-decoding the photo
     if (regenerateGhostOutline()) dom.ghostOutlineImg.classList.add('is-active');
     resetGhostTransform(); // a new photo starts centered/unscaled — old nudges shouldn't carry over
     state.ghost.flipped = false;
     applyGhostTransform();
     applyGhostOpacity();
 
-    state.before.dataUrl = dataUrl;
-    state.before.hasFile = true;
     state.before.lum = computeLuminanceFromImage(img);
     state.before.tilt = tryExtractTiltReference(dataUrl);
 
@@ -1051,6 +1056,16 @@ async function finishCapture(afterDataUrlRaw, tiltForExif, debugText) {
   }
 
   state.lastCaptured = { afterDataUrl, compositeDataUrl, debugText: debugText || '' };
+
+  // No before-photo was loaded, so there's nothing to compare/retake
+  // against — save straight to the camera roll with no prompt at all.
+  // Once a before-photo IS loaded, a wrong shot is much costlier (the
+  // whole point is matching it), so that case still stops at the review
+  // sheet for a Retake option before anything is saved.
+  if (!compositeDataUrl) {
+    await saveImages([{ dataUrl: afterDataUrl, name: filename('photo') }]);
+    return;
+  }
   showReviewSheet();
 }
 
@@ -1144,28 +1159,49 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([arr], { type: mime });
 }
 
-async function saveImageDataUrl(dataUrl, name) {
-  const blob = dataUrlToBlob(dataUrl);
-  const file = new File([blob], name, { type: 'image/jpeg' });
+function makeImageFile(dataUrl, name) {
+  return new File([dataUrlToBlob(dataUrl)], name, { type: 'image/jpeg' });
+}
 
-  if (isIOSDevice() && navigator.canShare && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file] });
-      showToast('Choose "Save Image" to add it to your photos');
-      return;
-    } catch (e) {
-      if (e && e.name === 'AbortError') return; // user cancelled the share sheet
-      // otherwise fall through to a plain download
-    }
-  }
-  const url = URL.createObjectURL(blob);
+function downloadFile(file) {
+  const url = URL.createObjectURL(file);
   const a = document.createElement('a');
-  a.href = url; a.download = name;
+  a.href = url; a.download = file.name;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
-  showToast('Downloaded ' + name + ' — check your browser\'s downloads');
+}
+
+// Saves one or more images with as few separate taps as possible. On iOS,
+// ALL files are handed to a single Web Share call when the browser
+// supports it, so saving a photo + comparison together still needs only
+// one "Save Image" tap in the native share sheet, not two in a row. That
+// one tap is unavoidable on iOS — Apple gives a website no way to write
+// into Photos without it, share sheet or not, so it isn't something this
+// app can remove. Android and desktop get a plain per-file download
+// instead, which needs no tap at all (though see the note above: it lands
+// in Downloads, not necessarily the same album as photos the phone's own
+// camera app saves).
+async function saveImages(items) {
+  const files = items.map(({ dataUrl, name }) => makeImageFile(dataUrl, name));
+
+  if (isIOSDevice() && navigator.canShare && navigator.canShare({ files })) {
+    try {
+      await navigator.share({ files });
+      showToast(files.length > 1
+        ? 'Choose "Save Image" to add both to your photos'
+        : 'Choose "Save Image" to add it to your photos');
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // user cancelled the share sheet
+      // otherwise fall through to per-file downloads below
+    }
+  }
+  files.forEach(downloadFile);
+  showToast(files.length > 1
+    ? 'Saved to your downloads'
+    : 'Saved ' + files[0].name + ' to your downloads');
 }
 
 // ---------------------------------------------------------------------
@@ -1299,21 +1335,19 @@ function wireControls() {
 
   dom.reviewClose.addEventListener('click', closeSheets);
   dom.retakeBtn.addEventListener('click', closeSheets);
-  dom.saveAfterBtn.addEventListener('click', () => saveImageDataUrl(state.lastCaptured.afterDataUrl, filename('photo')));
-  dom.saveCompositeBtn.addEventListener('click', () => {
-    if (state.lastCaptured.compositeDataUrl) saveImageDataUrl(state.lastCaptured.compositeDataUrl, filename('comparison'));
-  });
-  dom.saveBothBtn.addEventListener('click', async () => {
-    await saveImageDataUrl(state.lastCaptured.afterDataUrl, filename('photo'));
-    if (state.lastCaptured.compositeDataUrl) await saveImageDataUrl(state.lastCaptured.compositeDataUrl, filename('comparison'));
+  dom.keepSaveBtn.addEventListener('click', async () => {
+    const items = [{ dataUrl: state.lastCaptured.afterDataUrl, name: filename('photo') }];
+    if (state.lastCaptured.compositeDataUrl) {
+      items.push({ dataUrl: state.lastCaptured.compositeDataUrl, name: filename('comparison') });
+    }
+    await saveImages(items);
+    closeSheets();
   });
 }
 
 function applyPlatformLabels() {
   const ios = isIOSDevice();
-  dom.saveBothBtn.textContent = ios ? 'Save Both to Photos' : 'Download Both';
-  dom.saveAfterBtn.textContent = ios ? 'Save Photo Only' : 'Download Photo Only';
-  dom.saveCompositeBtn.textContent = ios ? 'Save Comparison Only' : 'Download Comparison Only';
+  dom.keepSaveBtn.textContent = ios ? 'Keep & Save to Photos' : 'Keep & Download';
 }
 
 function registerServiceWorker() {
