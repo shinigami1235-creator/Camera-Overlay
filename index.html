@@ -171,6 +171,16 @@
     <select id="camera-select"></select>
   </div>
 
+  <div class="toggle-row">
+    <div class="toggle-row-text">
+      <label for="hq-still-toggle">Sharper capture (experimental)</label>
+      <p class="desc">Uses your phone's dedicated still-photo camera pipeline instead of the live preview frame, for a sharper, less compressed photo. Off by default: on some phones (confirmed on at least one Samsung device) this pipeline can use a slightly different zoom than what's on screen, so a shot taken this way can come out more or less zoomed in than one taken with it off — even at the same position and framing. If you turn this on, keep it on (or off) for an entire before/after series so every shot in it comes from the same pipeline; switching it mid-series can itself cause the before/after mismatch this app is built to avoid.</p>
+    </div>
+    <button id="hq-still-toggle" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Sharper capture (experimental)">
+      <span class="toggle-knob"></span>
+    </button>
+  </div>
+
   <h3>Photo shape</h3>
   <p class="desc">Crops both the live view and the capture to this shape. Matching your before-photo's shape here also makes the ghost line up more easily.</p>
   <div class="aspect-picker" role="group" aria-label="Photo shape">

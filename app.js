@@ -73,6 +73,7 @@ const state = {
     readout: 'both', opacity: 45, captureAspect: '3:4', ghostStyle: 'both',
     outlineIntensity: DEFAULT_OUTLINE_INTENSITY, outlineColor: DEFAULT_OUTLINE_COLOR,
     matchZoomToGhost: false,
+    preferHQStill: false,
   },
   meterTimer: null,
   tiltProbeTimer: null,
@@ -129,6 +130,7 @@ function cacheDom() {
     outlineSwatches: Array.from(document.querySelectorAll('#outline-color-swatches .swatch')),
     matchZoomToggle: id('match-zoom-toggle'),
     zoomBadge: id('zoom-badge'),
+    hqStillToggle: id('hq-still-toggle'),
     cameraSelect: id('camera-select'),
     flipGhostBtn: id('flip-ghost-btn'),
     resetGhostBtn: id('reset-ghost-btn'),
@@ -171,7 +173,7 @@ function debugSnapshot() {
     'frame box (css px): ' + Math.round(frameRect.width) + 'x' + Math.round(frameRect.height),
     'preview canvas buffer (what is on screen): ' + dom.previewCanvas.width + 'x' + dom.previewCanvas.height,
     'isFrontFacing: ' + state.isFrontFacing,
-    'ImageCapture.takePhoto() available: ' + !!state.imageCapture,
+    'ImageCapture.takePhoto() available: ' + !!state.imageCapture + '  prefer-HQ-still setting: ' + state.settings.preferHQStill,
     'ghost scale: ' + state.ghost.scale.toFixed(3) + '  match-zoom-to-ghost: ' + state.settings.matchZoomToGhost + '  effective zoom: ' + computeEffectiveZoom().toFixed(3),
   ];
   if (crop) {
@@ -214,6 +216,7 @@ function applySettingsToUI() {
   syncOutlineSwatches();
   dom.matchZoomToggle.setAttribute('aria-checked', String(state.settings.matchZoomToGhost));
   updateZoomBadge();
+  dom.hqStillToggle.setAttribute('aria-checked', String(state.settings.preferHQStill));
 }
 
 function syncOutlineSwatches() {
@@ -945,20 +948,26 @@ async function capturePhoto() {
 
   dom.shutterBtn.disabled = true;
   try {
-    // Prefer the browser's dedicated still-photo pipeline (ImageCapture's
-    // takePhoto()) over a live video frame, where it's available — this
-    // is the same underlying capture path a native camera app's "shutter"
-    // uses, distinct from (and typically higher quality / less compressed
-    // than) the continuous video stream the live preview draws from.
-    // Support is Chromium-only (Chrome/Samsung Internet on Android, Chrome
-    // desktop) — Safari has never implemented it, so this silently falls
-    // back to the existing video-frame draw there, and also falls back if
-    // takePhoto() throws (some devices advertise support but fail at
-    // capture time). Either way framing still matches the live preview
-    // exactly, via the same computeCropRect() crop rectangle.
+    // ImageCapture's takePhoto() (the browser's dedicated still-photo
+    // pipeline) is OFF by default — "Sharper capture (experimental)" in
+    // Settings turns it on. It was originally on by default on the
+    // assumption that it's a strict upgrade: higher resolution, same
+    // framing as the live preview, via the same crop rectangle. A
+    // real-device before/after test disproved that — on at least one
+    // Android phone, a shot taken this way came out visibly more zoomed
+    // in than a shot of the exact same framing taken moments later,
+    // because takePhoto() pulls from the phone's own still-photo camera
+    // pipeline, which can silently use a different field of view (its
+    // own stabilization/zoom crop) than the getUserMedia video track the
+    // live preview and ghost alignment are actually based on. The video
+    // frame draw below doesn't have this risk by construction: it's
+    // always literally the same pixels the on-screen preview just
+    // showed, so two shots of the same on-screen framing always agree.
+    // That consistency matters more here than the sharper capture, so it
+    // stays opt-in for anyone on hardware where it isn't an issue.
     let stillImg = null;
     let usedHQStill = false;
-    if (state.imageCapture) {
+    if (state.settings.preferHQStill && state.imageCapture) {
       try {
         const blob = await state.imageCapture.takePhoto();
         stillImg = await blobToImage(blob);
@@ -1331,6 +1340,15 @@ function wireControls() {
     dom.matchZoomToggle.setAttribute('aria-checked', String(state.settings.matchZoomToGhost));
     updateZoomBadge();
     saveSettings();
+  });
+
+  dom.hqStillToggle.addEventListener('click', () => {
+    state.settings.preferHQStill = !state.settings.preferHQStill;
+    dom.hqStillToggle.setAttribute('aria-checked', String(state.settings.preferHQStill));
+    saveSettings();
+    showToast(state.settings.preferHQStill
+      ? 'Sharper capture on — keep it on (or off) for a whole before/after series'
+      : 'Sharper capture off — captures now always match the live preview exactly');
   });
 
   dom.reviewClose.addEventListener('click', closeSheets);
