@@ -10,7 +10,7 @@ Camera Overlay is a browser camera for consistent before/after photos. Load the 
 
 ## Focus mode
 
-The Focus button next to the Ghost slider turns everything outside the before photo's outline black, so only the area inside the outline shows the live camera. It needs an outline that closes around the subject. If the photo has none, the button says so and the full view stays on. Focus mode only changes the on-screen view and never appears in a saved photo.
+The Focus button next to the Ghost slider blacks out everything except the subject. Tap it, draw a loop around the subject with your finger, and lift. The live camera shows inside the loop and the rest goes black. The loop belongs to the before photo, so it moves with the ghost when you drag, pinch or flip it. Tap Focus again to turn it off and on, and use the pencil button beside it to redraw the loop. Focus mode only changes the on-screen view and never appears in a saved photo.
 
 ## Settings
 

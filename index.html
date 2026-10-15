@@ -41,13 +41,15 @@
          canvas, so saved-photo quality isn't capped by the screen. -->
     <video id="video" class="visually-hidden" autoplay playsinline muted></video>
     <img id="ghost-img" alt="">
-    <!-- Focus mode: solid black everywhere except inside the before-photo's
-         outline. It covers the live preview and the blended ghost but sits
-         under the outline lines, and it is never part of a saved photo.
-         Mask and transform are set in app.js (updateBlackout /
+    <!-- Focus mode: solid black everywhere except inside the loop the user
+         drew around the subject. It covers the live preview and the blended
+         ghost but sits under the outline lines, and it is never part of a
+         saved photo. Mask and transform are set in app.js (updateBlackout /
          applyGhostTransform). -->
     <div id="blackout" aria-hidden="true"></div>
     <img id="ghost-outline-img" alt="">
+
+    <canvas id="lasso-layer" aria-hidden="true"></canvas>
 
     <div id="pin" aria-hidden="true">
       <svg viewBox="0 0 56 56" fill="none">
@@ -112,12 +114,18 @@
       <label for="opacity-slider">Ghost</label>
       <input type="range" id="opacity-slider" min="0" max="90" step="1" value="45">
       <span class="pct" id="opacity-pct">45%</span>
-      <button id="focus-btn" class="focus-btn" type="button" aria-pressed="false" aria-label="Black out everything outside the outline">
+      <button id="focus-btn" class="focus-btn" type="button" aria-pressed="false" aria-label="Black out everything outside the area you draw">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="3" width="18" height="18" rx="3"/>
           <circle cx="12" cy="12" r="4"/>
         </svg>
         <span>Focus</span>
+      </button>
+      <button id="focus-redraw-btn" class="focus-redraw-btn" type="button" aria-label="Redraw the Focus area" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 20h9"/>
+          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>
+        </svg>
       </button>
     </div>
 

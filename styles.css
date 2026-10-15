@@ -242,13 +242,26 @@ button {
 }
 #ghost-img.is-active, #ghost-outline-img.is-active { display: block; }
 
-/* Focus mode. #blackout comes after #ghost-img and before
+/* Focus mode. #lasso-layer takes the touches while the user draws the area
+   around the subject. #blackout comes after #ghost-img and before
    #ghost-outline-img in index.html, so it hides the blended photo outside
    the shape too. It is five times the frame so it still covers the whole
    frame when the ghost is dragged or pinched. Its mask has two layers: a
    solid fill, and the "inside the outline" shape. With composite exclude,
    the shape punches a hole in the fill. app.js sets mask-image, mask-size
    and the transform. */
+#lasso-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 18;
+  display: none;
+  touch-action: none;
+  cursor: crosshair;
+}
+#lasso-layer.is-drawing { display: block; }
+
 #blackout {
   position: absolute;
   inset: -200%;
@@ -318,6 +331,18 @@ button {
   font: var(--cs-micro);
 }
 .focus-btn svg { width: 16px; height: 16px; }
+.focus-redraw-btn {
+  flex: none;
+  width: 32px; height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--cs-r-pill);
+  background: rgba(255,255,255,.12);
+  color: var(--cs-n-000);
+}
+.focus-redraw-btn[hidden] { display: none; }
+.focus-redraw-btn svg { width: 16px; height: 16px; }
 .focus-btn[aria-pressed="true"] {
   background: var(--cs-brand-gold);
   color: var(--cs-brand-navy);

@@ -48,12 +48,11 @@ const GHOST_OUTLINE_THRESHOLD = 40;         // Sobel gradient magnitude cutoff (
 const DEFAULT_OUTLINE_COLOR = '#c89a3c';    // brand gold, matches the crosshair pin
 const DEFAULT_OUTLINE_INTENSITY = 85;       // % opacity of the outline layer
 
-// Focus mode (blacks out everything outside the outline). The shape is found
-// on the same downsampled edge map as the visible outline.
-const FOCUS_EDGE_THRESHOLD = 20; // lower than the visible outline's, so faint edges (pale skin on a pale wall) still count as a boundary
-const FOCUS_SEAL_RADIUS = 3;     // px at outline resolution; gaps in the line up to about twice this get sealed
-const FOCUS_MIN_AREA = 0.03;     // inside shape smaller than this share of the photo is treated as "not found"
-const FOCUS_MAX_AREA = 0.92;     // larger than this means the outline never closed around anything
+// Focus mode: the user draws a loop around the subject on the live view,
+// and everything outside that loop is blacked out.
+const FOCUS_MASK_MAX_DIM = 640;  // px, longest side of the stored mask image
+const FOCUS_MIN_LOOP_PX = 12;    // fewer touch points than this isn't a loop
+const FOCUS_MIN_LOOP_SHARE = 0.04; // loop must cover at least this share of the frame's width and height
 const BLACKOUT_OVERSIZE = 5;     // #blackout is this many times the frame (see styles.css)
 
 // ---------------------------------------------------------------------
@@ -82,9 +81,9 @@ const state = {
     outlineIntensity: DEFAULT_OUTLINE_INTENSITY, outlineColor: DEFAULT_OUTLINE_COLOR,
     matchZoomToGhost: false,
     preferHQStill: false,
-    blackoutOutside: false,
   },
-  focusHoleUrl: null, // PNG of the "inside the outline" shape for the current before-photo, or null if none was found
+  focus: { on: false, drawing: false },
+  focusHoleUrl: null, // PNG of the drawn area for the current before-photo (opaque inside, transparent outside), or null before one is drawn
   meterTimer: null,
   tiltProbeTimer: null,
   lastCaptured: null, // { afterDataUrl, compositeDataUrl }
@@ -116,6 +115,8 @@ function cacheDom() {
     ghostOutlineImg: id('ghost-outline-img'),
     blackout: id('blackout'),
     focusBtn: id('focus-btn'),
+    focusRedrawBtn: id('focus-redraw-btn'),
+    lassoLayer: id('lasso-layer'),
     pin: id('pin'),
     meterCanvas: id('meter-canvas'),
     captureCanvas: id('capture-canvas'),
@@ -551,11 +552,10 @@ function loadBeforeFromDataUrl(dataUrl) {
     state.ghost.flipped = false;
     applyGhostTransform();
     applyGhostOpacity();
-    regenerateFocusHole();
+    stopFocusDrawing();
+    state.focus.on = false;
+    state.focusHoleUrl = null; // the old photo's drawn area doesn't apply to a new photo
     updateBlackout();
-    if (state.settings.blackoutOutside && !state.focusHoleUrl) {
-      showToast('No closed outline found in this photo, so everything stays visible');
-    }
 
     state.before.lum = computeLuminanceFromImage(img);
     state.before.tilt = tryExtractTiltReference(dataUrl);
@@ -642,133 +642,48 @@ function computeGhostOutline(img, colorHex) {
   return out.toDataURL('image/png'); // needs an alpha channel, so PNG not JPEG
 }
 
-// Grows every set pixel of a w*h 0/1 mask by r pixels (square neighbourhood).
-function dilateMask(mask, w, h, r) {
-  const tmp = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!mask[y * w + x]) continue;
-      const x0 = Math.max(0, x - r), x1 = Math.min(w - 1, x + r);
-      for (let xx = x0; xx <= x1; xx++) tmp[y * w + xx] = 1;
-    }
-  }
-  const out = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!tmp[y * w + x]) continue;
-      const y0 = Math.max(0, y - r), y1 = Math.min(h - 1, y + r);
-      for (let yy = y0; yy <= y1; yy++) out[yy * w + x] = 1;
-    }
-  }
-  return out;
+// Maps a screen point to a position on the before-photo, as fractions of its
+// width and height (0..1). It undoes the ghost's drag, pinch and flip and the
+// object-fit: cover crop, so a loop drawn on screen stays on the same part of
+// the photo when the ghost is moved afterwards.
+function screenPointToPhoto(clientX, clientY) {
+  const rect = dom.frame.getBoundingClientRect();
+  const fw = rect.width, fh = rect.height;
+  const g = state.ghost;
+  const sx = (g.flipped ? -1 : 1) * g.scale, sy = g.scale;
+  const qx = (clientX - rect.left - fw / 2 - (g.offsetXPct / 100) * fw) / sx;
+  const qy = (clientY - rect.top - fh / 2 - (g.offsetYPct / 100) * fh) / sy;
+  const iw = state.before.img.naturalWidth, ih = state.before.img.naturalHeight;
+  const s = Math.max(fw / iw, fh / ih);
+  return { u: qx / (iw * s) + 0.5, v: qy / (ih * s) + 0.5 };
 }
 
-// Finds the area enclosed by the outline and returns it as a PNG data URL
-// (opaque inside, transparent elsewhere), or null if no usable shape exists.
-//
-// How: the outline lines are widened a few pixels so small gaps close, then
-// the empty space between lines is split into connected regions. The
-// largest region that touches the photo's edge is the background. Anything
-// that isn't background counts as inside, and only the biggest connected
-// piece of that is kept, so stray clutter in the background drops out.
-// A photo whose outline never closes, or whose background is busy enough to
-// break into many pieces, gives a worse shape or none at all.
-function buildFocusHole(img) {
-  const { w, h, mag } = computeEdgeMagnitude(img);
-  const n = w * h;
-
-  const edge = new Uint8Array(n);
-  for (let i = 0; i < n; i++) edge[i] = mag[i] > FOCUS_EDGE_THRESHOLD ? 1 : 0;
-  const barrier = dilateMask(edge, w, h, FOCUS_SEAL_RADIUS);
-
-  // Label connected regions of non-barrier pixels (4-connected).
-  const label = new Int32Array(n); // 0 = unlabelled or barrier
-  const queue = new Int32Array(n);
-  const areas = [0];
-  const touchesBorder = [false];
-  let count = 0;
-  for (let start = 0; start < n; start++) {
-    if (barrier[start] || label[start]) continue;
-    count++;
-    let head = 0, tail = 0, area = 0, border = false;
-    queue[tail++] = start;
-    label[start] = count;
-    while (head < tail) {
-      const p = queue[head++];
-      area++;
-      const x = p % w, y = (p - x) / w;
-      if (x === 0 || y === 0 || x === w - 1 || y === h - 1) border = true;
-      if (x > 0 && !barrier[p - 1] && !label[p - 1]) { label[p - 1] = count; queue[tail++] = p - 1; }
-      if (x < w - 1 && !barrier[p + 1] && !label[p + 1]) { label[p + 1] = count; queue[tail++] = p + 1; }
-      if (y > 0 && !barrier[p - w] && !label[p - w]) { label[p - w] = count; queue[tail++] = p - w; }
-      if (y < h - 1 && !barrier[p + w] && !label[p + w]) { label[p + w] = count; queue[tail++] = p + w; }
-    }
-    areas.push(area);
-    touchesBorder.push(border);
-  }
-
-  let bg = 0;
-  for (let l = 1; l <= count; l++) {
-    if (touchesBorder[l] && (bg === 0 || areas[l] > areas[bg])) bg = l;
-  }
-  if (!bg) return null;
-
-  // Everything that isn't background, then keep its biggest connected piece.
-  const inside = new Uint8Array(n);
-  for (let i = 0; i < n; i++) inside[i] = label[i] === bg ? 0 : 1;
-
-  const piece = new Int32Array(n);
-  let bestPiece = 0, bestArea = 0, pieces = 0;
-  for (let start = 0; start < n; start++) {
-    if (!inside[start] || piece[start]) continue;
-    pieces++;
-    let head = 0, tail = 0, area = 0;
-    queue[tail++] = start;
-    piece[start] = pieces;
-    while (head < tail) {
-      const p = queue[head++];
-      area++;
-      const x = p % w;
-      if (x > 0 && inside[p - 1] && !piece[p - 1]) { piece[p - 1] = pieces; queue[tail++] = p - 1; }
-      if (x < w - 1 && inside[p + 1] && !piece[p + 1]) { piece[p + 1] = pieces; queue[tail++] = p + 1; }
-      if (p >= w && inside[p - w] && !piece[p - w]) { piece[p - w] = pieces; queue[tail++] = p - w; }
-      if (p < n - w && inside[p + w] && !piece[p + w]) { piece[p + w] = pieces; queue[tail++] = p + w; }
-    }
-    if (area > bestArea) { bestArea = area; bestPiece = pieces; }
-  }
-  if (!bestPiece) return null;
-
-  const share = bestArea / n;
-  if (share < FOCUS_MIN_AREA || share > FOCUS_MAX_AREA) return null;
-
-  const out = document.createElement('canvas');
-  out.width = w; out.height = h;
-  const octx = out.getContext('2d');
-  const outImg = octx.createImageData(w, h);
-  for (let i = 0; i < n; i++) {
-    if (piece[i] === bestPiece) outImg.data[i * 4 + 3] = 255; // black, opaque; only alpha matters for a mask
-  }
-  octx.putImageData(outImg, 0, 0);
-  return out.toDataURL('image/png');
-}
-
-function regenerateFocusHole() {
-  state.focusHoleUrl = null;
-  if (!state.before.img) return;
-  try {
-    state.focusHoleUrl = buildFocusHole(state.before.img);
-  } catch (e) {
-    console.warn('focus shape generation failed', e);
-  }
+// Turns a loop (array of {u, v}) into the mask image updateBlackout() uses.
+function buildFocusMask(loop) {
+  const iw = state.before.img.naturalWidth, ih = state.before.img.naturalHeight;
+  const k = Math.min(1, FOCUS_MASK_MAX_DIM / Math.max(iw, ih));
+  const w = Math.max(1, Math.round(iw * k)), h = Math.max(1, Math.round(ih * k));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  loop.forEach((p, i) => {
+    if (i === 0) ctx.moveTo(p.u * w, p.v * h); else ctx.lineTo(p.u * w, p.v * h);
+  });
+  ctx.closePath();
+  ctx.fill();
+  return c.toDataURL('image/png');
 }
 
 // Shows or hides the blackout and fits its mask to the photo as the ghost
 // layers draw it (object-fit: cover inside the frame). Call after anything
-// that changes the photo, the frame size or the Focus setting. Dragging,
+// that changes the photo, the frame size or the Focus state. Dragging,
 // pinching and flipping go through applyGhostTransform() instead.
 function updateBlackout() {
-  const active = !!(state.settings.blackoutOutside && state.before.hasFile && state.focusHoleUrl);
+  const active = !!(state.focus.on && state.before.hasFile && state.focusHoleUrl);
   dom.focusBtn.setAttribute('aria-pressed', String(active));
+  dom.focusRedrawBtn.hidden = !state.focusHoleUrl;
   dom.blackout.style.display = active ? 'block' : 'none';
   if (!active) return;
 
@@ -784,15 +699,115 @@ function updateBlackout() {
   applyGhostTransform();
 }
 
-function toggleFocusMode() {
+// Drawing the area. While it's on, #lasso-layer sits over the frame and
+// takes the touches, so dragging doesn't move the ghost.
+let lassoPoints = [];
+let lassoPointerId = null;
+
+function startFocusDrawing() {
   if (!state.before.hasFile) { showToast('Load a before photo first'); return; }
-  if (!state.settings.blackoutOutside && !state.focusHoleUrl) {
-    showToast('No closed outline found in this photo');
+  state.focus.drawing = true;
+  state.focus.on = false; // show the whole view while drawing
+  updateBlackout();
+  const layer = dom.lassoLayer;
+  layer.width = dom.frame.clientWidth;
+  layer.height = dom.frame.clientHeight;
+  layer.getContext('2d').clearRect(0, 0, layer.width, layer.height);
+  layer.classList.add('is-drawing');
+  lassoPoints = [];
+  showToast('Draw a loop around the subject');
+}
+
+function stopFocusDrawing() {
+  state.focus.drawing = false;
+  dom.lassoLayer.classList.remove('is-drawing');
+  lassoPoints = [];
+  lassoPointerId = null;
+}
+
+function drawLassoPath(closed) {
+  const layer = dom.lassoLayer;
+  const ctx = layer.getContext('2d');
+  ctx.clearRect(0, 0, layer.width, layer.height);
+  if (lassoPoints.length < 2) return;
+  ctx.beginPath();
+  lassoPoints.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+  if (closed) ctx.closePath();
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#C89A3C';
+  ctx.stroke();
+}
+
+function finishFocusDrawing() {
+  const layer = dom.lassoLayer;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  lassoPoints.forEach((p) => {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  });
+  const tooSmall = lassoPoints.length < FOCUS_MIN_LOOP_PX
+    || (maxX - minX) < layer.width * FOCUS_MIN_LOOP_SHARE
+    || (maxY - minY) < layer.height * FOCUS_MIN_LOOP_SHARE;
+  if (tooSmall) {
+    lassoPoints = [];
+    drawLassoPath(false);
+    showToast('Draw a bigger loop around the subject');
     return;
   }
-  state.settings.blackoutOutside = !state.settings.blackoutOutside;
+  const rect = dom.frame.getBoundingClientRect();
+  const loop = lassoPoints.map((p) => screenPointToPhoto(p.x + rect.left, p.y + rect.top));
+  state.focusHoleUrl = buildFocusMask(loop);
+  state.focus.on = true;
+  stopFocusDrawing();
   updateBlackout();
-  saveSettings();
+}
+
+function initLasso() {
+  const layer = dom.lassoLayer;
+  layer.addEventListener('pointerdown', (e) => {
+    if (!state.focus.drawing || lassoPointerId !== null) return;
+    e.stopPropagation(); // keep the stage's drag/pinch handler out of it
+    lassoPointerId = e.pointerId;
+    try { layer.setPointerCapture(e.pointerId); } catch (err) { /* drawing still works without capture */ }
+    const rect = layer.getBoundingClientRect();
+    lassoPoints = [{ x: e.clientX - rect.left, y: e.clientY - rect.top }];
+  });
+  layer.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== lassoPointerId) return;
+    e.stopPropagation();
+    const rect = layer.getBoundingClientRect();
+    lassoPoints.push({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    drawLassoPath(false);
+  });
+  const end = (e) => {
+    if (e.pointerId !== lassoPointerId) return;
+    e.stopPropagation();
+    lassoPointerId = null;
+    drawLassoPath(true);
+    finishFocusDrawing();
+  };
+  layer.addEventListener('pointerup', end);
+  layer.addEventListener('pointercancel', (e) => {
+    if (e.pointerId !== lassoPointerId) return;
+    lassoPointerId = null;
+    lassoPoints = [];
+    drawLassoPath(false);
+  });
+}
+
+function toggleFocusMode() {
+  if (state.focus.drawing) { stopFocusDrawing(); return; } // tapping Focus again cancels
+  if (!state.before.hasFile) { showToast('Load a before photo first'); return; }
+  if (state.focus.on) {
+    state.focus.on = false;
+    updateBlackout();
+  } else if (state.focusHoleUrl) {
+    state.focus.on = true;
+    updateBlackout();
+  } else {
+    startFocusDrawing();
+  }
 }
 
 // Re-runs edge detection against the cached before-photo Image using the
@@ -1517,6 +1532,7 @@ function wireControls() {
   });
 
   dom.focusBtn.addEventListener('click', toggleFocusMode);
+  dom.focusRedrawBtn.addEventListener('click', startFocusDrawing);
 
   dom.flipGhostBtn.addEventListener('click', () => {
     state.ghost.flipped = !state.ghost.flipped;
@@ -1579,6 +1595,7 @@ function init() {
   applyGhostTransform();
   initPinDrag();
   initGhostGestures();
+  initLasso();
   initTiltUI();
   updateLightingBadge();
   applyPlatformLabels();
