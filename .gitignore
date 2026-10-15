@@ -1,0 +1,17 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor folders
+.vscode/
+.idea/
+
+# Python cache from scripts/make_icons.py
+__pycache__/
+*.pyc
+
+# Local notes and tokens
+*.docx
+*.env
+.env

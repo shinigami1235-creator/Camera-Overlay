@@ -48,6 +48,14 @@ const GHOST_OUTLINE_THRESHOLD = 40;         // Sobel gradient magnitude cutoff (
 const DEFAULT_OUTLINE_COLOR = '#c89a3c';    // brand gold, matches the crosshair pin
 const DEFAULT_OUTLINE_INTENSITY = 85;       // % opacity of the outline layer
 
+// Focus mode (blacks out everything outside the outline). The shape is found
+// on the same downsampled edge map as the visible outline.
+const FOCUS_EDGE_THRESHOLD = 20; // lower than the visible outline's, so faint edges (pale skin on a pale wall) still count as a boundary
+const FOCUS_SEAL_RADIUS = 3;     // px at outline resolution; gaps in the line up to about twice this get sealed
+const FOCUS_MIN_AREA = 0.03;     // inside shape smaller than this share of the photo is treated as "not found"
+const FOCUS_MAX_AREA = 0.92;     // larger than this means the outline never closed around anything
+const BLACKOUT_OVERSIZE = 5;     // #blackout is this many times the frame (see styles.css)
+
 // ---------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------
@@ -74,7 +82,9 @@ const state = {
     outlineIntensity: DEFAULT_OUTLINE_INTENSITY, outlineColor: DEFAULT_OUTLINE_COLOR,
     matchZoomToGhost: false,
     preferHQStill: false,
+    blackoutOutside: false,
   },
+  focusHoleUrl: null, // PNG of the "inside the outline" shape for the current before-photo, or null if none was found
   meterTimer: null,
   tiltProbeTimer: null,
   lastCaptured: null, // { afterDataUrl, compositeDataUrl }
@@ -104,6 +114,8 @@ function cacheDom() {
     video: id('video'),
     ghostImg: id('ghost-img'),
     ghostOutlineImg: id('ghost-outline-img'),
+    blackout: id('blackout'),
+    focusBtn: id('focus-btn'),
     pin: id('pin'),
     meterCanvas: id('meter-canvas'),
     captureCanvas: id('capture-canvas'),
@@ -231,6 +243,11 @@ function syncOutlineSwatches() {
 // the same "fit inside, preserve ratio" logic used for the capture crop
 // below — the two need to agree pixel-for-pixel with what's on screen.
 function applyFrameSize() {
+  sizeFrame();
+  updateBlackout(); // its mask size follows the frame size
+}
+
+function sizeFrame() {
   const ratio = ASPECT_RATIOS[state.settings.captureAspect];
   if (!ratio) {
     dom.frame.style.width = '100%';
@@ -382,6 +399,10 @@ function applyGhostTransform() {
   // Both ghost layers (blend + outline) always move together.
   dom.ghostImg.style.transform = t;
   dom.ghostOutlineImg.style.transform = t;
+  // The blackout is BLACKOUT_OVERSIZE times the frame, and translate % is
+  // relative to the element's own size, so the offset is divided to match.
+  dom.blackout.style.transform = 'translate(' + (state.ghost.offsetXPct / BLACKOUT_OVERSIZE) + '%, '
+    + (state.ghost.offsetYPct / BLACKOUT_OVERSIZE) + '%) scale(' + scaleX + ', ' + state.ghost.scale + ')';
   updateZoomBadge();
 }
 
@@ -530,6 +551,11 @@ function loadBeforeFromDataUrl(dataUrl) {
     state.ghost.flipped = false;
     applyGhostTransform();
     applyGhostOpacity();
+    regenerateFocusHole();
+    updateBlackout();
+    if (state.settings.blackoutOutside && !state.focusHoleUrl) {
+      showToast('No closed outline found in this photo, so everything stays visible');
+    }
 
     state.before.lum = computeLuminanceFromImage(img);
     state.before.tilt = tryExtractTiltReference(dataUrl);
@@ -560,7 +586,10 @@ function hexToRgb(hex) {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-function computeGhostOutline(img, colorHex) {
+// Sobel gradient magnitude of the downsampled photo. Shared by the visible
+// outline and by Focus mode, so both always agree on where the lines are.
+// The 1px border of the result stays 0.
+function computeEdgeMagnitude(img) {
   const scale = Math.min(1, GHOST_OUTLINE_MAX_DIM / Math.max(img.naturalWidth, img.naturalHeight));
   const w = Math.max(1, Math.round(img.naturalWidth * scale));
   const h = Math.max(1, Math.round(img.naturalHeight * scale));
@@ -576,12 +605,7 @@ function computeGhostOutline(img, colorHex) {
     gray[p] = 0.299 * srcData[i] + 0.587 * srcData[i + 1] + 0.114 * srcData[i + 2];
   }
 
-  const out = document.createElement('canvas');
-  out.width = w; out.height = h;
-  const octx = out.getContext('2d');
-  const outImg = octx.createImageData(w, h);
-  const [r, g, b] = hexToRgb(colorHex);
-
+  const mag = new Float32Array(w * h);
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
@@ -590,18 +614,185 @@ function computeGhostOutline(img, colorHex) {
         - gray[i + w - 1] + gray[i + w + 1];
       const gy = -gray[i - w - 1] - 2 * gray[i - w] - gray[i - w + 1]
         + gray[i + w - 1] + 2 * gray[i + w] + gray[i + w + 1];
-      const mag = Math.sqrt(gx * gx + gy * gy);
-      if (mag > GHOST_OUTLINE_THRESHOLD) {
-        const o = i * 4;
-        outImg.data[o] = r;
-        outImg.data[o + 1] = g;
-        outImg.data[o + 2] = b;
-        outImg.data[o + 3] = Math.min(255, mag);
-      }
+      mag[i] = Math.sqrt(gx * gx + gy * gy);
+    }
+  }
+  return { w, h, mag };
+}
+
+function computeGhostOutline(img, colorHex) {
+  const { w, h, mag } = computeEdgeMagnitude(img);
+
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const outImg = octx.createImageData(w, h);
+  const [r, g, b] = hexToRgb(colorHex);
+
+  for (let i = 0; i < mag.length; i++) {
+    if (mag[i] > GHOST_OUTLINE_THRESHOLD) {
+      const o = i * 4;
+      outImg.data[o] = r;
+      outImg.data[o + 1] = g;
+      outImg.data[o + 2] = b;
+      outImg.data[o + 3] = Math.min(255, mag[i]);
     }
   }
   octx.putImageData(outImg, 0, 0);
   return out.toDataURL('image/png'); // needs an alpha channel, so PNG not JPEG
+}
+
+// Grows every set pixel of a w*h 0/1 mask by r pixels (square neighbourhood).
+function dilateMask(mask, w, h, r) {
+  const tmp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!mask[y * w + x]) continue;
+      const x0 = Math.max(0, x - r), x1 = Math.min(w - 1, x + r);
+      for (let xx = x0; xx <= x1; xx++) tmp[y * w + xx] = 1;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!tmp[y * w + x]) continue;
+      const y0 = Math.max(0, y - r), y1 = Math.min(h - 1, y + r);
+      for (let yy = y0; yy <= y1; yy++) out[yy * w + x] = 1;
+    }
+  }
+  return out;
+}
+
+// Finds the area enclosed by the outline and returns it as a PNG data URL
+// (opaque inside, transparent elsewhere), or null if no usable shape exists.
+//
+// How: the outline lines are widened a few pixels so small gaps close, then
+// the empty space between lines is split into connected regions. The
+// largest region that touches the photo's edge is the background. Anything
+// that isn't background counts as inside, and only the biggest connected
+// piece of that is kept, so stray clutter in the background drops out.
+// A photo whose outline never closes, or whose background is busy enough to
+// break into many pieces, gives a worse shape or none at all.
+function buildFocusHole(img) {
+  const { w, h, mag } = computeEdgeMagnitude(img);
+  const n = w * h;
+
+  const edge = new Uint8Array(n);
+  for (let i = 0; i < n; i++) edge[i] = mag[i] > FOCUS_EDGE_THRESHOLD ? 1 : 0;
+  const barrier = dilateMask(edge, w, h, FOCUS_SEAL_RADIUS);
+
+  // Label connected regions of non-barrier pixels (4-connected).
+  const label = new Int32Array(n); // 0 = unlabelled or barrier
+  const queue = new Int32Array(n);
+  const areas = [0];
+  const touchesBorder = [false];
+  let count = 0;
+  for (let start = 0; start < n; start++) {
+    if (barrier[start] || label[start]) continue;
+    count++;
+    let head = 0, tail = 0, area = 0, border = false;
+    queue[tail++] = start;
+    label[start] = count;
+    while (head < tail) {
+      const p = queue[head++];
+      area++;
+      const x = p % w, y = (p - x) / w;
+      if (x === 0 || y === 0 || x === w - 1 || y === h - 1) border = true;
+      if (x > 0 && !barrier[p - 1] && !label[p - 1]) { label[p - 1] = count; queue[tail++] = p - 1; }
+      if (x < w - 1 && !barrier[p + 1] && !label[p + 1]) { label[p + 1] = count; queue[tail++] = p + 1; }
+      if (y > 0 && !barrier[p - w] && !label[p - w]) { label[p - w] = count; queue[tail++] = p - w; }
+      if (y < h - 1 && !barrier[p + w] && !label[p + w]) { label[p + w] = count; queue[tail++] = p + w; }
+    }
+    areas.push(area);
+    touchesBorder.push(border);
+  }
+
+  let bg = 0;
+  for (let l = 1; l <= count; l++) {
+    if (touchesBorder[l] && (bg === 0 || areas[l] > areas[bg])) bg = l;
+  }
+  if (!bg) return null;
+
+  // Everything that isn't background, then keep its biggest connected piece.
+  const inside = new Uint8Array(n);
+  for (let i = 0; i < n; i++) inside[i] = label[i] === bg ? 0 : 1;
+
+  const piece = new Int32Array(n);
+  let bestPiece = 0, bestArea = 0, pieces = 0;
+  for (let start = 0; start < n; start++) {
+    if (!inside[start] || piece[start]) continue;
+    pieces++;
+    let head = 0, tail = 0, area = 0;
+    queue[tail++] = start;
+    piece[start] = pieces;
+    while (head < tail) {
+      const p = queue[head++];
+      area++;
+      const x = p % w;
+      if (x > 0 && inside[p - 1] && !piece[p - 1]) { piece[p - 1] = pieces; queue[tail++] = p - 1; }
+      if (x < w - 1 && inside[p + 1] && !piece[p + 1]) { piece[p + 1] = pieces; queue[tail++] = p + 1; }
+      if (p >= w && inside[p - w] && !piece[p - w]) { piece[p - w] = pieces; queue[tail++] = p - w; }
+      if (p < n - w && inside[p + w] && !piece[p + w]) { piece[p + w] = pieces; queue[tail++] = p + w; }
+    }
+    if (area > bestArea) { bestArea = area; bestPiece = pieces; }
+  }
+  if (!bestPiece) return null;
+
+  const share = bestArea / n;
+  if (share < FOCUS_MIN_AREA || share > FOCUS_MAX_AREA) return null;
+
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const outImg = octx.createImageData(w, h);
+  for (let i = 0; i < n; i++) {
+    if (piece[i] === bestPiece) outImg.data[i * 4 + 3] = 255; // black, opaque; only alpha matters for a mask
+  }
+  octx.putImageData(outImg, 0, 0);
+  return out.toDataURL('image/png');
+}
+
+function regenerateFocusHole() {
+  state.focusHoleUrl = null;
+  if (!state.before.img) return;
+  try {
+    state.focusHoleUrl = buildFocusHole(state.before.img);
+  } catch (e) {
+    console.warn('focus shape generation failed', e);
+  }
+}
+
+// Shows or hides the blackout and fits its mask to the photo as the ghost
+// layers draw it (object-fit: cover inside the frame). Call after anything
+// that changes the photo, the frame size or the Focus setting. Dragging,
+// pinching and flipping go through applyGhostTransform() instead.
+function updateBlackout() {
+  const active = !!(state.settings.blackoutOutside && state.before.hasFile && state.focusHoleUrl);
+  dom.focusBtn.setAttribute('aria-pressed', String(active));
+  dom.blackout.style.display = active ? 'block' : 'none';
+  if (!active) return;
+
+  const fw = dom.frame.clientWidth, fh = dom.frame.clientHeight;
+  const iw = state.before.img.naturalWidth, ih = state.before.img.naturalHeight;
+  if (!fw || !fh || !iw || !ih) return;
+  const s = Math.max(fw / iw, fh / ih);
+  const size = Math.round(iw * s) + 'px ' + Math.round(ih * s) + 'px, 100% 100%';
+  const image = 'url(' + state.focusHoleUrl + '), linear-gradient(#000, #000)';
+  const st = dom.blackout.style;
+  st.webkitMaskImage = image;      st.maskImage = image;
+  st.webkitMaskSize = size;        st.maskSize = size;
+  applyGhostTransform();
+}
+
+function toggleFocusMode() {
+  if (!state.before.hasFile) { showToast('Load a before photo first'); return; }
+  if (!state.settings.blackoutOutside && !state.focusHoleUrl) {
+    showToast('No closed outline found in this photo');
+    return;
+  }
+  state.settings.blackoutOutside = !state.settings.blackoutOutside;
+  updateBlackout();
+  saveSettings();
 }
 
 // Re-runs edge detection against the cached before-photo Image using the
@@ -1324,6 +1515,8 @@ function wireControls() {
       saveSettings();
     });
   });
+
+  dom.focusBtn.addEventListener('click', toggleFocusMode);
 
   dom.flipGhostBtn.addEventListener('click', () => {
     state.ghost.flipped = !state.ghost.flipped;

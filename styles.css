@@ -242,6 +242,27 @@ button {
 }
 #ghost-img.is-active, #ghost-outline-img.is-active { display: block; }
 
+/* Focus mode. #blackout comes after #ghost-img and before
+   #ghost-outline-img in index.html, so it hides the blended photo outside
+   the shape too. It is five times the frame so it still covers the whole
+   frame when the ghost is dragged or pinched. Its mask has two layers: a
+   solid fill, and the "inside the outline" shape. With composite exclude,
+   the shape punches a hole in the fill. app.js sets mask-image, mask-size
+   and the transform. */
+#blackout {
+  position: absolute;
+  inset: -200%;
+  background: #000;
+  pointer-events: none;
+  display: none;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center, center;
+  mask-position: center, center;
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
 /* Crosshair / landmark pin */
 #pin {
   position: absolute;
@@ -284,6 +305,23 @@ button {
 .opacity-row label { font: var(--cs-micro); color: var(--cs-n-200); white-space: nowrap; }
 .opacity-row input[type="range"] { flex: 1; accent-color: var(--cs-brand-gold); }
 .opacity-row .pct { font-family: var(--cs-font-mono); font-size: 12px; width: 34px; text-align: right; color: var(--cs-n-100); }
+
+.focus-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px var(--cs-3);
+  border-radius: var(--cs-r-pill);
+  background: rgba(255,255,255,.12);
+  color: var(--cs-n-000);
+  font: var(--cs-micro);
+}
+.focus-btn svg { width: 16px; height: 16px; }
+.focus-btn[aria-pressed="true"] {
+  background: var(--cs-brand-gold);
+  color: var(--cs-brand-navy);
+}
 
 /* "Take with Camera App" — hands the shutter off to the phone's own
    native camera app for full quality (see app.js's triggerNativeCapture()
