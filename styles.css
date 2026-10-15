@@ -243,9 +243,9 @@ button {
 #ghost-img.is-active, #ghost-outline-img.is-active { display: block; }
 
 /* Focus mode. #lasso-layer takes the touches while the user draws the area
-   around the subject. #blackout comes after #ghost-img and before
-   #ghost-outline-img in index.html, so it hides the blended photo outside
-   the shape too. It is five times the frame so it still covers the whole
+   around the subject. #blackout comes after #ghost-img and
+   #ghost-outline-img in index.html, so it hides the blended photo and the
+   outline lines outside the shape too. It is five times the frame so it still covers the whole
    frame when the ghost is dragged or pinched. Its mask has two layers: a
    solid fill, and the "inside the outline" shape. With composite exclude,
    the shape punches a hole in the fill. app.js sets mask-image, mask-size

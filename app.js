@@ -53,6 +53,12 @@ const DEFAULT_OUTLINE_INTENSITY = 85;       // % opacity of the outline layer
 const FOCUS_MASK_MAX_DIM = 640;  // px, longest side of the stored mask image
 const FOCUS_MIN_LOOP_PX = 12;    // fewer touch points than this isn't a loop
 const FOCUS_MIN_LOOP_SHARE = 0.04; // loop must cover at least this share of the frame's width and height
+// Edge snapping: the drawn loop is pulled onto the nearest strong edge.
+const SNAP_POINTS = 240;         // points along the loop
+const SNAP_BANDS = [0.12, 0.05]; // how far a point may move, as a share of the photo's shorter side: a wide first pass, then a close one
+const SNAP_STICK = 0.35;         // pull back toward the line you drew (higher = trusts your drawing more)
+const SNAP_BEND = 0.1;          // cost of the contour bending between neighbouring points (higher = smoother)
+const SNAP_EDGE_FULL = 160;      // Sobel strength treated as a full-strength edge
 const BLACKOUT_OVERSIZE = 5;     // #blackout is this many times the frame (see styles.css)
 
 // ---------------------------------------------------------------------
@@ -658,6 +664,107 @@ function screenPointToPhoto(clientX, clientY) {
   return { u: qx / (iw * s) + 0.5, v: qy / (ih * s) + 0.5 };
 }
 
+// Magnetic-lasso snapping. The drawn loop is resampled into SNAP_POINTS
+// points. Each point may slide along the line perpendicular to the loop,
+// up to a set share of the photo's shorter side either way (SNAP_BANDS). A dynamic-programming
+// pass (Viterbi) picks one slide per point so that the contour sits on strong
+// edges, stays close to what was drawn, and doesn't zigzag between neighbours.
+// The loop goes around twice and the second lap is kept, so the start and end
+// of the loop agree. Returns a loop of {u, v}, or the original loop if the
+// photo has nothing usable. It runs twice, wide and then close, so a loose
+// loop first lands near the subject and then settles onto its edge.
+function snapLoopToEdges(loop, band) {
+  const { w, h, mag } = computeEdgeMagnitude(state.before.img);
+  const edgeAt = (x, y) => {
+    if (x < 0 || y < 0 || x > w - 1 || y > h - 1) return 0;
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
+    const fx = x - x0, fy = y - y0;
+    const v = mag[y0 * w + x0] * (1 - fx) * (1 - fy) + mag[y0 * w + x1] * fx * (1 - fy)
+      + mag[y1 * w + x0] * (1 - fx) * fy + mag[y1 * w + x1] * fx * fy;
+    return Math.min(1, v / SNAP_EDGE_FULL);
+  };
+
+  // Resample the loop to evenly spaced points, in edge-map pixels.
+  const pts = loop.map((p) => ({ x: p.u * w, y: p.v * h }));
+  const segLen = [];
+  let total = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    segLen.push(d);
+    total += d;
+  }
+  if (total < 1) return loop;
+  const N = SNAP_POINTS;
+  const even = [];
+  let seg = 0, into = 0;
+  for (let i = 0; i < N; i++) {
+    const target = (i / N) * total;
+    while (into + segLen[seg] < target && seg < pts.length - 1) { into += segLen[seg]; seg++; }
+    const a = pts[seg], b = pts[(seg + 1) % pts.length];
+    const t = segLen[seg] > 0 ? (target - into) / segLen[seg] : 0;
+    even.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  }
+
+  // Normal at each point.
+  const normals = even.map((p, i) => {
+    const a = even[(i - 1 + N) % N], b = even[(i + 1) % N];
+    const tx = b.x - a.x, ty = b.y - a.y;
+    const len = Math.hypot(tx, ty) || 1;
+    return { x: -ty / len, y: tx / len };
+  });
+
+  const K = Math.max(3, Math.round(band * Math.min(w, h)));
+  const S = 2 * K + 1;
+  const MAX_STEP = 3;
+  const unary = new Float32Array(N * S);
+  for (let i = 0; i < N; i++) {
+    for (let s = 0; s < S; s++) {
+      const off = s - K;
+      const e = edgeAt(even[i].x + normals[i].x * off, even[i].y + normals[i].y * off);
+      unary[i * S + s] = -e + SNAP_STICK * Math.abs(off) / K;
+    }
+  }
+
+  const L = 2 * N;
+  const back = new Int16Array(L * S);
+  let prev = new Float32Array(S), cur = new Float32Array(S);
+  for (let s = 0; s < S; s++) prev[s] = unary[s];
+  for (let l = 1; l < L; l++) {
+    const i = l % N;
+    for (let s = 0; s < S; s++) {
+      let best = Infinity, arg = s;
+      for (let d = -MAX_STEP; d <= MAX_STEP; d++) {
+        const p = s + d;
+        if (p < 0 || p >= S) continue;
+        const c = prev[p] + SNAP_BEND * Math.abs(d);
+        if (c < best) { best = c; arg = p; }
+      }
+      cur[s] = best + unary[i * S + s];
+      back[l * S + s] = arg;
+    }
+    const t = prev; prev = cur; cur = t;
+  }
+  let end = 0;
+  for (let s = 1; s < S; s++) if (prev[s] < prev[end]) end = s;
+  const slide = new Array(L);
+  for (let l = L - 1, s = end; l >= 0; l--) {
+    slide[l] = s - K;
+    s = back[l * S + s];
+  }
+
+  // Keep the second lap, then smooth it a little.
+  let off = slide.slice(N);
+  for (let pass = 0; pass < 2; pass++) {
+    off = off.map((v, i) => (off[(i - 1 + N) % N] + v + off[(i + 1) % N]) / 3);
+  }
+  return even.map((p, i) => ({
+    u: (p.x + normals[i].x * off[i]) / w,
+    v: (p.y + normals[i].y * off[i]) / h,
+  }));
+}
+
 // Turns a loop (array of {u, v}) into the mask image updateBlackout() uses.
 function buildFocusMask(loop) {
   const iw = state.before.img.naturalWidth, ih = state.before.img.naturalHeight;
@@ -756,7 +863,12 @@ function finishFocusDrawing() {
     return;
   }
   const rect = dom.frame.getBoundingClientRect();
-  const loop = lassoPoints.map((p) => screenPointToPhoto(p.x + rect.left, p.y + rect.top));
+  let loop = lassoPoints.map((p) => screenPointToPhoto(p.x + rect.left, p.y + rect.top));
+  try {
+    SNAP_BANDS.forEach((band) => { loop = snapLoopToEdges(loop, band); });
+  } catch (err) {
+    console.warn('edge snapping failed, using the loop as drawn', err);
+  }
   state.focusHoleUrl = buildFocusMask(loop);
   state.focus.on = true;
   stopFocusDrawing();

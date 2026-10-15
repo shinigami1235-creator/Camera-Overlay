@@ -41,13 +41,13 @@
          canvas, so saved-photo quality isn't capped by the screen. -->
     <video id="video" class="visually-hidden" autoplay playsinline muted></video>
     <img id="ghost-img" alt="">
+    <img id="ghost-outline-img" alt="">
     <!-- Focus mode: solid black everywhere except inside the loop the user
-         drew around the subject. It covers the live preview and the blended
-         ghost but sits under the outline lines, and it is never part of a
-         saved photo. Mask and transform are set in app.js (updateBlackout /
+         drew around the subject. It covers the live preview, the blended
+         ghost and the outline lines, and it is never part of a saved photo.
+         Mask and transform are set in app.js (updateBlackout /
          applyGhostTransform). -->
     <div id="blackout" aria-hidden="true"></div>
-    <img id="ghost-outline-img" alt="">
 
     <canvas id="lasso-layer" aria-hidden="true"></canvas>
 
