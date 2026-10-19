@@ -61,6 +61,16 @@ const SNAP_BEND = 0.1;          // cost of the contour bending between neighbour
 const SNAP_EDGE_FULL = 160;      // Sobel strength treated as a full-strength edge
 const BLACKOUT_OVERSIZE = 5;     // #blackout is this many times the frame (see styles.css)
 
+// Angle sets: the standard clinical series, shot in this order.
+const ANGLES = [
+  { key: 'front',         label: 'Front',         chip: 'Front' },
+  { key: 'left-45',       label: 'Left 45°',      chip: 'L 45°' },
+  { key: 'left-profile',  label: 'Left profile',  chip: 'L profile' },
+  { key: 'right-45',      label: 'Right 45°',     chip: 'R 45°' },
+  { key: 'right-profile', label: 'Right profile', chip: 'R profile' },
+];
+const TIMER_STEPS = [0, 2, 3, 5]; // self-timer seconds the timer button cycles through
+
 // ---------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------
@@ -72,7 +82,7 @@ const state = {
   currentDeviceId: null,
   facingMode: 'environment',
   isFrontFacing: false,
-  before: { dataUrl: null, img: null, lum: null, tilt: null, hasFile: false },
+  before: { dataUrl: null, img: null, lum: null, tilt: null, hasFile: false, date: null },
   pin: { xPct: 50, yPct: 50 },
   // Manual correction for the ghost overlay, since the live camera stream
   // and an arbitrary uploaded before-photo can have different native
@@ -87,7 +97,20 @@ const state = {
     outlineIntensity: DEFAULT_OUTLINE_INTENSITY, outlineColor: DEFAULT_OUTLINE_COLOR,
     matchZoomToGhost: false,
     preferHQStill: false,
+    timer: 0,             // self-timer seconds, 0 = off
+    gridLayout: 'side',   // 'side' (before | after) or 'stacked' (before above after)
   },
+  // Patient, visit and angle set. Kept in memory only, so it's gone when the
+  // app closes, since this app doesn't store anything about patients.
+  session: {
+    patient: '',
+    visit: '',
+    angleSet: false,
+    angle: 0,       // index into ANGLES
+    slots: [],      // per angle: { before, ghost, focusHoleUrl, focusOn, done }
+  },
+  camera: { lockSupported: false, torchSupported: false, locked: false, torch: false },
+  countdown: { timer: null, left: 0 },
   focus: { on: false, drawing: false },
   focusHoleUrl: null, // PNG of the drawn area for the current before-photo (opaque inside, transparent outside), or null before one is drawn
   meterTimer: null,
@@ -108,6 +131,22 @@ function cacheDom() {
     startError: id('start-error'),
 
     settingsBtn: id('settings-btn'),
+    hideUiBtn: id('hide-ui-btn'),
+    timerBtn: id('timer-btn'),
+    timerLabel: id('timer-label'),
+    lockBtn: id('lock-btn'),
+    torchBtn: id('torch-btn'),
+    countdownEl: id('countdown'),
+
+    sessionChip: id('session-chip'),
+    sessionSheet: id('session-sheet'),
+    sessionClose: id('session-close'),
+    patientInput: id('patient-input'),
+    visitInput: id('visit-input'),
+    angleSetToggle: id('angle-set-toggle'),
+    clearSessionBtn: id('clear-session-btn'),
+    sessionDoneBtn: id('session-done-btn'),
+    angleStrip: id('angle-strip'),
 
     tiltBadge: id('tilt-badge'),
     lightingBadge: id('lighting-badge'),
@@ -156,9 +195,13 @@ function cacheDom() {
 
     reviewSheet: id('review-sheet'),
     reviewClose: id('review-close'),
-    reviewAfterImg: id('review-after-img'),
-    reviewCompositeWrap: id('review-composite-wrap'),
+    compare: id('compare'),
+    compareBefore: id('compare-before'),
+    compareAfter: id('compare-after'),
+    compareBeforeWrap: id('compare-before-wrap'),
+    compareHandle: id('compare-handle'),
     reviewCompositeImg: id('review-composite-img'),
+    gridLayoutButtons: Array.from(document.querySelectorAll('#grid-layout-picker button')),
     saveGridBtn: id('save-grid-btn'),
     saveSingleBtn: id('save-single-btn'),
     saveBothBtn: id('save-both-btn'),
@@ -238,6 +281,10 @@ function applySettingsToUI() {
   dom.matchZoomToggle.setAttribute('aria-checked', String(state.settings.matchZoomToGhost));
   updateZoomBadge();
   dom.hqStillToggle.setAttribute('aria-checked', String(state.settings.preferHQStill));
+  if (!TIMER_STEPS.includes(state.settings.timer)) state.settings.timer = 0;
+  if (state.settings.gridLayout !== 'stacked') state.settings.gridLayout = 'side';
+  updateTimerButton();
+  dom.gridLayoutButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.value === state.settings.gridLayout));
 }
 
 function syncOutlineSwatches() {
@@ -484,6 +531,7 @@ async function startCamera(constraintsOverride) {
       state.imageCapture = null;
     }
     state.currentDeviceId = settings.deviceId || state.currentDeviceId;
+    refreshCameraControls();
     await refreshDeviceList();
     hideStartOverlay();
     startMetering();
@@ -532,50 +580,122 @@ function switchToDevice(deviceId) {
 // ---------------------------------------------------------------------
 // Before-photo loading (ghost overlay + lighting/tilt reference)
 // ---------------------------------------------------------------------
-function pickBeforePhoto(file) {
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => loadBeforeFromDataUrl(reader.result);
-  reader.onerror = () => showToast('Could not read that photo');
-  reader.readAsDataURL(file);
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
-function loadBeforeFromDataUrl(dataUrl) {
-  const img = new Image();
-  img.onload = () => {
-    // Set BEFORE any apply*() call below — applyGhostOpacity() reads
-    // state.before.hasFile to decide whether the ghost should be visible
-    // at all, so setting it after was making the overlay compute itself
-    // as invisible (opacity 0) on a photo's first-ever load. It would
-    // then only appear on a SECOND upload, because hasFile was already
-    // left `true` from the first (silently-invisible) one.
-    state.before.dataUrl = dataUrl;
-    state.before.hasFile = true;
-    state.before.img = img; // kept so the outline can be recolored later without re-decoding the photo
+// One photo goes to the current angle. With an angle set on, picking several
+// photos at once fills the angles in order, starting from the current one.
+async function pickBeforePhotos(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  const startAngle = state.session.angle;
+  const count = state.session.angleSet ? Math.min(list.length, ANGLES.length - startAngle) : 1;
+  for (let k = 0; k < count; k++) {
+    let before;
+    try {
+      before = await decodeBefore(await readFileAsDataUrl(list[k]), list[k]);
+    } catch (e) {
+      showToast('Could not read that photo');
+      return;
+    }
+    if (k === 0) {
+      setCurrentBefore(before);
+    } else {
+      state.session.slots[startAngle + k] = { before, ghost: defaultGhost(), focusHoleUrl: null, focusOn: false, done: false };
+    }
+  }
+  renderAngleStrip();
+  if (count > 1) {
+    showToast('Loaded ' + count + ' before photos, ' + ANGLES[startAngle].label + ' to ' + ANGLES[startAngle + count - 1].label);
+  } else {
+    showToast(state.before.tilt ? 'Before photo loaded, with tilt reference' : 'Before photo loaded, no tilt reference');
+  }
+}
 
-    dom.ghostImg.src = dataUrl;
+// Kept for anything that hands over a data URL directly.
+async function loadBeforeFromDataUrl(dataUrl) {
+  try {
+    setCurrentBefore(await decodeBefore(dataUrl, null));
+    renderAngleStrip();
+    showToast(state.before.tilt ? 'Before photo loaded, with tilt reference' : 'Before photo loaded, no tilt reference');
+  } catch (e) {
+    showToast('Could not read that photo');
+  }
+}
+
+// Decodes a before photo and reads what the app needs from it once:
+// luminance for the lighting badge, the tilt reference and the date.
+function decodeBefore(dataUrl, file) {
+  return loadImg(dataUrl).then((img) => ({
+    dataUrl,
+    img, // kept so the outline can be recolored later without re-decoding the photo
+    hasFile: true,
+    lum: computeLuminanceFromImage(img),
+    tilt: tryExtractTiltReference(dataUrl),
+    date: readPhotoDate(dataUrl, file),
+  }));
+}
+
+// When the before photo was taken: the EXIF capture date if there is one,
+// then the time stamp this app writes with its tilt reference, then the
+// file's own date. Null if none of those exist.
+function readPhotoDate(dataUrl, file) {
+  if (dataUrl.startsWith('data:image/jpeg') && typeof piexif !== 'undefined') {
+    try {
+      const exif = piexif.load(dataUrl);
+      const raw = (exif.Exif && exif.Exif[piexif.ExifIFD.DateTimeOriginal]) || (exif['0th'] && exif['0th'][piexif.ImageIFD.DateTime]);
+      const m = raw && /^(\d{4}):(\d{2}):(\d{2})/.exec(raw);
+      if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    } catch (e) { /* no EXIF */ }
+  }
+  const tilt = tryExtractTiltReference(dataUrl);
+  if (tilt && tilt.ts) return new Date(tilt.ts);
+  if (file && file.lastModified) return new Date(file.lastModified);
+  return null;
+}
+
+function emptyBefore() {
+  return { dataUrl: null, img: null, lum: null, tilt: null, hasFile: false, date: null };
+}
+function defaultGhost() {
+  return { offsetXPct: 0, offsetYPct: 0, scale: 1, flipped: false };
+}
+
+// A new before photo starts centered and unscaled, with no Focus loop, since
+// nudges and loops from the old photo don't apply to it.
+function setCurrentBefore(before) {
+  stopFocusDrawing();
+  state.before = before;
+  state.ghost = defaultGhost();
+  state.focus.on = false;
+  state.focusHoleUrl = null;
+  if (state.session.slots[state.session.angle]) state.session.slots[state.session.angle].done = false;
+  applyBeforeToUI();
+}
+
+// Redraws everything that depends on the current before photo.
+function applyBeforeToUI() {
+  if (state.before.hasFile) {
+    dom.ghostImg.src = state.before.dataUrl;
     dom.ghostImg.classList.add('is-active');
     if (regenerateGhostOutline()) dom.ghostOutlineImg.classList.add('is-active');
-    resetGhostTransform(); // a new photo starts centered/unscaled — old nudges shouldn't carry over
-    state.ghost.flipped = false;
-    applyGhostTransform();
-    applyGhostOpacity();
-    stopFocusDrawing();
-    state.focus.on = false;
-    state.focusHoleUrl = null; // the old photo's drawn area doesn't apply to a new photo
-    updateBlackout();
-
-    state.before.lum = computeLuminanceFromImage(img);
-    state.before.tilt = tryExtractTiltReference(dataUrl);
-
-    updateTiltBadge();
-    updateLightingBadge();
-    showToast(state.before.tilt
-      ? 'Before photo loaded — tilt reference found'
-      : 'Before photo loaded — no tilt reference (lighting comparison still works)');
-  };
-  img.onerror = () => showToast('Could not read that photo');
-  img.src = dataUrl;
+  } else {
+    dom.ghostImg.classList.remove('is-active');
+    dom.ghostOutlineImg.classList.remove('is-active');
+    dom.ghostImg.removeAttribute('src');
+    dom.ghostOutlineImg.removeAttribute('src');
+  }
+  applyGhostTransform();
+  applyGhostOpacity();
+  updateBlackout();
+  updateTiltBadge();
+  updateLightingBadge();
 }
 
 // Traces just the edges of the before-photo into a transparent-background
@@ -1234,27 +1354,61 @@ function loadImg(src) {
   });
 }
 
-async function buildComposite(beforeUrl, afterUrl) {
+function formatDate(d) {
+  return d ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+}
+
+// The grid: before and after side by side ('side') or one above the other
+// ('stacked'), each with a label band carrying BEFORE/AFTER and its date,
+// plus a footer band with the visit and angle when those are set. The
+// patient name is left off on purpose, since grids often get shared.
+async function buildComposite(beforeUrl, afterUrl, opts) {
   if (!beforeUrl) return null;
+  const o = opts || {};
   const [beforeImg, afterImg] = await Promise.all([loadImg(beforeUrl), loadImg(afterUrl)]);
-  const targetH = COMPOSITE_TARGET_H;
-  const bw = Math.round(beforeImg.width * (targetH / beforeImg.height));
-  const aw = Math.round(afterImg.width * (targetH / afterImg.height));
-  const gap = 6;
-  const labelH = 44;
+  const gap = 6, labelH = 44, footerH = o.footer ? 40 : 0;
+  const beforeLabel = 'BEFORE' + (o.beforeDate ? '  ·  ' + formatDate(o.beforeDate) : '');
+  const afterLabel = 'AFTER' + (o.afterDate ? '  ·  ' + formatDate(o.afterDate) : '');
   const canvas = document.createElement('canvas');
-  canvas.width = bw + aw + gap;
-  canvas.height = targetH + labelH;
   const ctx = canvas.getContext('2d');
+  let places;
+
+  if (o.layout === 'stacked') {
+    const w = COMPOSITE_TARGET_H;
+    const bh = Math.round(beforeImg.height * (w / beforeImg.width));
+    const ah = Math.round(afterImg.height * (w / afterImg.width));
+    canvas.width = w;
+    canvas.height = labelH + bh + gap + labelH + ah + footerH;
+    places = [
+      { img: beforeImg, x: 0, y: labelH, w, h: bh, label: beforeLabel, lx: w / 2, ly: 31 },
+      { img: afterImg, x: 0, y: labelH + bh + gap + labelH, w, h: ah, label: afterLabel, lx: w / 2, ly: labelH + bh + gap + 31 },
+    ];
+  } else {
+    const h = COMPOSITE_TARGET_H;
+    const bw = Math.round(beforeImg.width * (h / beforeImg.height));
+    const aw = Math.round(afterImg.width * (h / afterImg.height));
+    canvas.width = bw + gap + aw;
+    canvas.height = labelH + h + footerH;
+    places = [
+      { img: beforeImg, x: 0, y: labelH, w: bw, h, label: beforeLabel, lx: bw / 2, ly: 31 },
+      { img: afterImg, x: bw + gap, y: labelH, w: aw, h, label: afterLabel, lx: bw + gap + aw / 2, ly: 31 },
+    ];
+  }
+
   ctx.fillStyle = '#101C2B';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(beforeImg, 0, labelH, bw, targetH);
-  ctx.drawImage(afterImg, bw + gap, labelH, aw, targetH);
   ctx.fillStyle = '#F7F8FA';
-  ctx.font = '600 26px system-ui, -apple-system, sans-serif';
+  ctx.font = '600 24px system-ui, -apple-system, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('BEFORE', bw / 2, 31);
-  ctx.fillText('AFTER', bw + gap + aw / 2, 31);
+  places.forEach((p) => {
+    ctx.drawImage(p.img, p.x, p.y, p.w, p.h);
+    ctx.fillText(p.label, p.lx, p.ly);
+  });
+  if (o.footer) {
+    ctx.fillStyle = '#C89A3C';
+    ctx.font = '500 20px system-ui, -apple-system, sans-serif';
+    ctx.fillText(o.footer, canvas.width / 2, canvas.height - 13);
+  }
   return canvas.toDataURL('image/jpeg', 0.9);
 }
 
@@ -1364,38 +1518,61 @@ function blobToImage(blob) {
 // Shared tail for every capture path: embeds the tilt reading (if any) as
 // EXIF, builds the before/after composite, and opens the review sheet.
 async function finishCapture(afterDataUrlRaw, tiltForExif, debugText) {
+  const takenAt = new Date();
   let afterDataUrl = afterDataUrlRaw;
-  if (tiltForExif && typeof piexif !== 'undefined') {
+  if (typeof piexif !== 'undefined') {
     try {
-      const meta = { beta: round1(tiltForExif.beta), gamma: round1(tiltForExif.gamma), ts: Date.now() };
       const exifObj = { '0th': {}, Exif: {}, GPS: {} };
-      exifObj['0th'][piexif.ImageIFD.ImageDescription] = META_TAG + JSON.stringify(meta);
-      const exifBytes = piexif.dump(exifObj);
-      afterDataUrl = piexif.insert(exifBytes, afterDataUrl);
+      exifObj.Exif[piexif.ExifIFD.DateTimeOriginal] = exifDate(takenAt);
+      if (tiltForExif) {
+        const meta = { beta: round1(tiltForExif.beta), gamma: round1(tiltForExif.gamma), ts: takenAt.getTime() };
+        exifObj['0th'][piexif.ImageIFD.ImageDescription] = META_TAG + JSON.stringify(meta);
+      }
+      afterDataUrl = piexif.insert(piexif.dump(exifObj), afterDataUrl);
     } catch (e) {
-      console.warn('EXIF embed failed', e); // capture still proceeds without the reference
+      console.warn('EXIF embed failed', e); // capture still proceeds without it
     }
   }
 
-  let compositeDataUrl = null;
+  state.lastCaptured = {
+    afterDataUrl,
+    compositeDataUrl: null,
+    beforeDataUrl: state.before.dataUrl,
+    beforeDate: state.before.date,
+    afterDate: takenAt,
+    footer: gridFooterText(),
+    debugText: debugText || '',
+  };
+
+  // No before photo: nothing to compare or retake against, so save straight
+  // away. With one, a wrong shot costs more, so it stops at the review sheet.
+  if (!state.before.hasFile) {
+    await saveImages([{ dataUrl: afterDataUrl, name: filename('photo') }]);
+    markAngleSaved();
+    return;
+  }
   try {
-    compositeDataUrl = await buildComposite(state.before.dataUrl, afterDataUrl);
+    await rebuildComposite();
   } catch (e) {
     console.warn('composite build failed', e);
   }
-
-  state.lastCaptured = { afterDataUrl, compositeDataUrl, debugText: debugText || '' };
-
-  // No before-photo was loaded, so there's nothing to compare/retake
-  // against — save straight to the camera roll with no prompt at all.
-  // Once a before-photo IS loaded, a wrong shot is much costlier (the
-  // whole point is matching it), so that case still stops at the review
-  // sheet for a Retake option before anything is saved.
-  if (!compositeDataUrl) {
-    await saveImages([{ dataUrl: afterDataUrl, name: filename('photo') }]);
-    return;
-  }
   showReviewSheet();
+}
+
+function exifDate(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + ':' + p(d.getMonth() + 1) + ':' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+async function rebuildComposite() {
+  const c = state.lastCaptured;
+  c.compositeDataUrl = await buildComposite(c.beforeDataUrl, c.afterDataUrl, {
+    layout: state.settings.gridLayout,
+    beforeDate: c.beforeDate,
+    afterDate: c.afterDate,
+    footer: c.footer,
+  });
+  dom.reviewCompositeImg.src = c.compositeDataUrl;
 }
 
 // "Take with Camera App" handoff: hands framing off to the device's own
@@ -1438,19 +1615,46 @@ function handleNativeCaptureFile(file) {
 }
 
 function showReviewSheet() {
-  const { afterDataUrl, compositeDataUrl, debugText } = state.lastCaptured;
-  dom.reviewAfterImg.src = afterDataUrl;
-  if (compositeDataUrl) {
-    dom.reviewCompositeWrap.hidden = false;
-    dom.reviewCompositeImg.src = compositeDataUrl;
-  } else {
-    dom.reviewCompositeWrap.hidden = true;
-  }
+  const c = state.lastCaptured;
+  dom.compareAfter.src = c.afterDataUrl;
+  dom.compareBefore.src = c.beforeDataUrl;
+  // The compare box takes the after photo's shape; the before photo fills it
+  // the same way the ghost does (object-fit: cover).
+  loadImg(c.afterDataUrl).then((img) => {
+    dom.compare.style.aspectRatio = img.naturalWidth + ' / ' + img.naturalHeight;
+  }).catch(() => {});
+  setComparePosition(50);
+  dom.reviewCompositeImg.src = c.compositeDataUrl || '';
+  dom.gridLayoutButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.value === state.settings.gridLayout));
   if (DEBUG && dom.reviewDebug) {
     dom.reviewDebug.hidden = false;
-    dom.reviewDebug.textContent = debugText;
+    dom.reviewDebug.textContent = c.debugText;
   }
   openSheet(dom.reviewSheet);
+}
+
+// Wipe compare: the before photo shows left of the handle, the after photo right of it.
+function setComparePosition(pct) {
+  const p = clamp(pct, 0, 100);
+  dom.compareBeforeWrap.style.clipPath = 'inset(0 ' + (100 - p) + '% 0 0)';
+  dom.compareHandle.style.left = p + '%';
+}
+
+function initCompare() {
+  let dragging = null;
+  const move = (e) => {
+    const r = dom.compare.getBoundingClientRect();
+    setComparePosition(((e.clientX - r.left) / r.width) * 100);
+  };
+  dom.compare.addEventListener('pointerdown', (e) => {
+    dragging = e.pointerId;
+    try { dom.compare.setPointerCapture(e.pointerId); } catch (err) { /* still works without capture */ }
+    move(e);
+  });
+  dom.compare.addEventListener('pointermove', (e) => { if (e.pointerId === dragging) move(e); });
+  const end = (e) => { if (e.pointerId === dragging) dragging = null; };
+  dom.compare.addEventListener('pointerup', end);
+  dom.compare.addEventListener('pointercancel', end);
 }
 
 // ---------------------------------------------------------------------
@@ -1472,11 +1676,19 @@ function isIOSDevice() {
   return false;
 }
 
+function slugPart(text) {
+  return String(text || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+}
+
+// cygnus-<patient>-<visit>-<angle>-<kind>-<date-time>.jpg, skipping whatever isn't set.
 function filename(kind) {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
-  return 'cygnus-' + kind + '-' + stamp + '.jpg';
+  const parts = ['cygnus', slugPart(state.session.patient), slugPart(state.session.visit)];
+  if (state.session.angleSet) parts.push(ANGLES[state.session.angle].key);
+  parts.push(kind, stamp);
+  return parts.filter(Boolean).join('-') + '.jpg';
 }
 
 function dataUrlToBlob(dataUrl) {
@@ -1557,6 +1769,275 @@ function showToast(msg) {
 }
 
 // ---------------------------------------------------------------------
+// Patient, visit and angle sets
+// ---------------------------------------------------------------------
+function gridFooterText() {
+  const parts = [state.session.visit.trim()];
+  if (state.session.angleSet) parts.push(ANGLES[state.session.angle].label);
+  return parts.filter(Boolean).join('  ·  ');
+}
+
+function renderSessionChip() {
+  const text = [state.session.patient.trim(), state.session.visit.trim()].filter(Boolean).join(' · ');
+  dom.sessionChip.textContent = text || 'Add patient and visit';
+  dom.sessionChip.classList.toggle('is-empty', !text);
+}
+
+// Stores the current angle's before photo, ghost and Focus loop, so switching
+// angles and coming back finds them as they were.
+function saveCurrentSlot() {
+  const i = state.session.angle;
+  const old = state.session.slots[i];
+  state.session.slots[i] = {
+    before: state.before,
+    ghost: Object.assign({}, state.ghost),
+    focusHoleUrl: state.focusHoleUrl,
+    focusOn: state.focus.on,
+    done: old ? old.done : false,
+  };
+}
+
+function switchAngle(i) {
+  if (i === state.session.angle) return;
+  stopFocusDrawing();
+  saveCurrentSlot();
+  state.session.angle = i;
+  const slot = state.session.slots[i];
+  state.before = slot ? slot.before : emptyBefore();
+  state.ghost = slot ? Object.assign({}, slot.ghost) : defaultGhost();
+  state.focusHoleUrl = slot ? slot.focusHoleUrl : null;
+  state.focus.on = slot ? slot.focusOn : false;
+  applyBeforeToUI();
+  renderAngleStrip();
+}
+
+function renderAngleStrip() {
+  const on = state.session.angleSet;
+  dom.angleStrip.hidden = !on;
+  dom.beforeFileInput.multiple = on;
+  if (!on) return;
+  dom.angleStrip.innerHTML = '';
+  ANGLES.forEach((a, i) => {
+    const slot = i === state.session.angle ? { before: state.before, done: (state.session.slots[i] || {}).done } : state.session.slots[i];
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'angle-chip';
+    b.classList.toggle('is-current', i === state.session.angle);
+    b.classList.toggle('is-done', !!(slot && slot.done));
+    b.classList.toggle('has-before', !!(slot && slot.before && slot.before.hasFile));
+    b.textContent = a.chip;
+    b.setAttribute('aria-label', a.label + (slot && slot.done ? ', saved' : ''));
+    b.addEventListener('click', () => switchAngle(i));
+    dom.angleStrip.appendChild(b);
+  });
+}
+
+// Called after a photo of the current angle is saved: ticks it off and moves
+// to the next angle that isn't saved yet.
+function markAngleSaved() {
+  if (!state.session.angleSet) return;
+  saveCurrentSlot();
+  state.session.slots[state.session.angle].done = true;
+  const n = ANGLES.length;
+  for (let k = 1; k <= n; k++) {
+    const i = (state.session.angle + k) % n;
+    const slot = state.session.slots[i];
+    if (!slot || !slot.done) {
+      switchAngle(i);
+      return;
+    }
+  }
+  renderAngleStrip();
+  showToast('All ' + n + ' angles saved');
+}
+
+function clearSession() {
+  stopFocusDrawing();
+  state.session.patient = '';
+  state.session.visit = '';
+  state.session.slots = [];
+  state.session.angle = 0;
+  dom.patientInput.value = '';
+  dom.visitInput.value = '';
+  state.before = emptyBefore();
+  state.ghost = defaultGhost();
+  state.focusHoleUrl = null;
+  state.focus.on = false;
+  applyBeforeToUI();
+  renderSessionChip();
+  renderAngleStrip();
+}
+
+// ---------------------------------------------------------------------
+// Self-timer
+// ---------------------------------------------------------------------
+function updateTimerButton() {
+  const t = state.settings.timer;
+  dom.timerLabel.textContent = t ? t + 's' : '';
+  dom.timerBtn.setAttribute('aria-pressed', String(t > 0));
+  dom.timerBtn.setAttribute('aria-label', t ? 'Self-timer ' + t + ' seconds' : 'Self-timer off');
+}
+
+function cycleTimer() {
+  const i = TIMER_STEPS.indexOf(state.settings.timer);
+  state.settings.timer = TIMER_STEPS[(i + 1) % TIMER_STEPS.length];
+  updateTimerButton();
+  saveSettings();
+  showToast(state.settings.timer ? 'Self-timer ' + state.settings.timer + ' seconds' : 'Self-timer off');
+}
+
+// Shutter: straight capture, or a countdown when the self-timer is on.
+// Tapping the shutter again during the countdown cancels it.
+function onShutter() {
+  if (state.countdown.timer) { cancelCountdown(); return; }
+  if (!state.settings.timer) { capturePhoto(); return; }
+  if (!dom.video.videoWidth) { showToast('Camera not ready yet'); return; }
+  state.countdown.left = state.settings.timer;
+  dom.countdownEl.textContent = state.countdown.left;
+  dom.countdownEl.hidden = false;
+  dom.shutterBtn.classList.add('is-counting');
+  state.countdown.timer = setInterval(() => {
+    state.countdown.left -= 1;
+    if (state.countdown.left > 0) {
+      dom.countdownEl.textContent = state.countdown.left;
+      return;
+    }
+    cancelCountdown();
+    capturePhoto();
+  }, 1000);
+}
+
+function cancelCountdown() {
+  clearInterval(state.countdown.timer);
+  state.countdown.timer = null;
+  dom.countdownEl.hidden = true;
+  dom.shutterBtn.classList.remove('is-counting');
+}
+
+// ---------------------------------------------------------------------
+// Exposure / white balance lock and flashlight (Chrome on Android; the
+// buttons stay hidden where the camera doesn't offer them)
+// ---------------------------------------------------------------------
+function videoTrack() {
+  return state.stream ? state.stream.getVideoTracks()[0] : null;
+}
+
+function trackCaps(track) {
+  try { return (track && track.getCapabilities) ? track.getCapabilities() : {}; } catch (e) { return {}; }
+}
+
+function refreshCameraControls() {
+  const caps = trackCaps(videoTrack());
+  const exp = caps.exposureMode || [], wb = caps.whiteBalanceMode || [];
+  state.camera.lockSupported = exp.includes('manual') || wb.includes('manual');
+  state.camera.torchSupported = caps.torch === true || (Array.isArray(caps.torch) && caps.torch.includes(true));
+  state.camera.locked = false; // a new camera track starts on auto
+  state.camera.torch = false;
+  dom.lockBtn.hidden = !state.camera.lockSupported;
+  dom.torchBtn.hidden = !state.camera.torchSupported;
+  dom.lockBtn.setAttribute('aria-pressed', 'false');
+  dom.torchBtn.setAttribute('aria-pressed', 'false');
+}
+
+async function toggleExposureLock() {
+  const track = videoTrack();
+  if (!track) return;
+  const caps = trackCaps(track);
+  const cur = track.getSettings ? track.getSettings() : {};
+  const want = !state.camera.locked;
+  const adv = {};
+  const has = (list, v) => Array.isArray(list) && list.includes(v);
+  if (want) {
+    // Lock at whatever auto has settled on right now.
+    if (has(caps.exposureMode, 'manual')) {
+      adv.exposureMode = 'manual';
+      if (caps.exposureTime && cur.exposureTime != null) adv.exposureTime = cur.exposureTime;
+    }
+    if (has(caps.whiteBalanceMode, 'manual')) {
+      adv.whiteBalanceMode = 'manual';
+      if (caps.colorTemperature && cur.colorTemperature != null) adv.colorTemperature = cur.colorTemperature;
+    }
+  } else {
+    if (has(caps.exposureMode, 'continuous')) adv.exposureMode = 'continuous';
+    if (has(caps.whiteBalanceMode, 'continuous')) adv.whiteBalanceMode = 'continuous';
+  }
+  try {
+    await track.applyConstraints({ advanced: [adv] });
+    const now = track.getSettings ? track.getSettings() : {};
+    const took = want ? (now.exposureMode === 'manual' || now.whiteBalanceMode === 'manual') : true;
+    if (!took) { showToast("This camera didn't accept the lock"); return; }
+    state.camera.locked = want;
+    dom.lockBtn.setAttribute('aria-pressed', String(want));
+    showToast(want ? 'Exposure and white balance locked' : 'Exposure and white balance on auto');
+  } catch (e) {
+    showToast("This camera didn't accept the lock");
+  }
+}
+
+async function toggleTorch() {
+  const track = videoTrack();
+  if (!track) return;
+  const want = !state.camera.torch;
+  try {
+    await track.applyConstraints({ advanced: [{ torch: want }] });
+    state.camera.torch = want;
+    dom.torchBtn.setAttribute('aria-pressed', String(want));
+  } catch (e) {
+    showToast("This camera's flashlight can't be turned on from here");
+  }
+}
+
+// ---------------------------------------------------------------------
+// Hide controls: clears the badges, hint and extra buttons off the view
+// ---------------------------------------------------------------------
+function toggleHideUi() {
+  const hidden = document.body.classList.toggle('ui-hidden');
+  dom.hideUiBtn.setAttribute('aria-pressed', String(hidden));
+  dom.hideUiBtn.setAttribute('aria-label', hidden ? 'Show controls' : 'Hide controls');
+}
+
+function wireExtras() {
+  dom.timerBtn.addEventListener('click', cycleTimer);
+  dom.lockBtn.addEventListener('click', toggleExposureLock);
+  dom.torchBtn.addEventListener('click', toggleTorch);
+  dom.hideUiBtn.addEventListener('click', toggleHideUi);
+
+  dom.sessionChip.addEventListener('click', () => {
+    dom.patientInput.value = state.session.patient;
+    dom.visitInput.value = state.session.visit;
+    dom.angleSetToggle.setAttribute('aria-checked', String(state.session.angleSet));
+    openSheet(dom.sessionSheet);
+  });
+  dom.sessionClose.addEventListener('click', closeSheets);
+  dom.sessionDoneBtn.addEventListener('click', closeSheets);
+  dom.patientInput.addEventListener('input', () => { state.session.patient = dom.patientInput.value; renderSessionChip(); });
+  dom.visitInput.addEventListener('input', () => { state.session.visit = dom.visitInput.value; renderSessionChip(); });
+  dom.angleSetToggle.addEventListener('click', () => {
+    const on = !state.session.angleSet;
+    if (!on && state.session.angle !== 0) switchAngle(0); // back to Front before leaving the set
+    state.session.angleSet = on;
+    dom.angleSetToggle.setAttribute('aria-checked', String(on));
+    renderAngleStrip();
+  });
+  dom.clearSessionBtn.addEventListener('click', () => {
+    clearSession();
+    closeSheets();
+    showToast('Ready for the next patient');
+  });
+
+  dom.gridLayoutButtons.forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      state.settings.gridLayout = btn.dataset.value;
+      dom.gridLayoutButtons.forEach((b) => b.classList.toggle('is-active', b === btn));
+      saveSettings();
+      if (state.lastCaptured && state.lastCaptured.beforeDataUrl) {
+        try { await rebuildComposite(); } catch (e) { console.warn('composite build failed', e); }
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------
 function wireControls() {
@@ -1576,13 +2057,12 @@ function wireControls() {
 
   dom.loadBeforeBtn.addEventListener('click', () => dom.beforeFileInput.click());
   dom.beforeFileInput.addEventListener('change', () => {
-    const file = dom.beforeFileInput.files && dom.beforeFileInput.files[0];
-    pickBeforePhoto(file);
+    pickBeforePhotos(dom.beforeFileInput.files);
     dom.beforeFileInput.value = '';
   });
 
   dom.flipCamBtn.addEventListener('click', flipCamera);
-  dom.shutterBtn.addEventListener('click', capturePhoto);
+  dom.shutterBtn.addEventListener('click', onShutter);
 
   dom.nativeCaptureBtn.addEventListener('click', triggerNativeCapture);
   dom.nativeCaptureInput.addEventListener('change', () => {
@@ -1646,16 +2126,17 @@ function wireControls() {
   });
 
   dom.focusBtn.addEventListener('click', toggleFocusMode);
+  wireExtras();
   dom.focusRedrawBtn.addEventListener('click', startFocusDrawing);
 
   dom.flipGhostBtn.addEventListener('click', () => {
     state.ghost.flipped = !state.ghost.flipped;
     applyGhostTransform();
-    showToast(state.ghost.flipped ? 'Ghost flipped' : 'Ghost un-flipped');
+    showToast(state.ghost.flipped ? 'Ghost flipped' : 'Ghost unflipped');
   });
   dom.resetGhostBtn.addEventListener('click', () => {
     resetGhostTransform();
-    showToast('Ghost position & zoom reset');
+    showToast('Ghost position and zoom reset');
   });
 
   dom.matchZoomToggle.addEventListener('click', () => {
@@ -1669,9 +2150,7 @@ function wireControls() {
     state.settings.preferHQStill = !state.settings.preferHQStill;
     dom.hqStillToggle.setAttribute('aria-checked', String(state.settings.preferHQStill));
     saveSettings();
-    showToast(state.settings.preferHQStill
-      ? 'Sharper capture on — keep it on (or off) for a whole before/after series'
-      : 'Sharper capture off — captures now always match the live preview exactly');
+    showToast(state.settings.preferHQStill ? 'Sharper capture on. Keep it the same for a whole series.' : 'Sharper capture off');
   });
 
   dom.reviewClose.addEventListener('click', closeSheets);
@@ -1680,11 +2159,13 @@ function wireControls() {
   dom.saveGridBtn.addEventListener('click', async () => {
     const { compositeDataUrl } = state.lastCaptured;
     await saveImages([{ dataUrl: compositeDataUrl, name: filename('grid') }]);
+    markAngleSaved();
     closeSheets();
   });
   dom.saveSingleBtn.addEventListener('click', async () => {
     const { afterDataUrl } = state.lastCaptured;
     await saveImages([{ dataUrl: afterDataUrl, name: filename('photo') }]);
+    markAngleSaved();
     closeSheets();
   });
   dom.saveBothBtn.addEventListener('click', async () => {
@@ -1693,6 +2174,7 @@ function wireControls() {
       { dataUrl: afterDataUrl, name: filename('photo') },
       { dataUrl: compositeDataUrl, name: filename('grid') },
     ]);
+    markAngleSaved();
     closeSheets();
   });
 }
@@ -1716,6 +2198,9 @@ function init() {
   initPinDrag();
   initGhostGestures();
   initLasso();
+  initCompare();
+  renderSessionChip();
+  renderAngleStrip();
   initTiltUI();
   updateLightingBadge();
   wireControls();

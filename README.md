@@ -12,6 +12,25 @@ Camera Overlay is a browser camera for consistent before/after photos. Load the 
 
 The Focus button next to the Ghost slider blacks out everything except the subject. Tap it, draw a loop around the subject with your finger, and lift. The loop snaps onto the subject's edge like the magnetic lasso in Photoshop, so it only needs to run close to the subject. The live camera shows inside it and everything else goes fully black, outline lines included. The loop belongs to the before photo, so it moves with the ghost when you drag, pinch or flip it. Tap Focus again to turn it off and on, and use the pencil button beside it to redraw the loop. Focus mode only changes the on-screen view and never appears in a saved photo.
 
+## Patient, visit and angle sets
+
+Tap the chip under the top bar to set the patient and the visit, like "Maria S." and "Week 4". Both go into the saved file names, for example `cygnus-maria-s-week-4-front-grid-20261019-094101.jpg`. The visit and angle also go on the grid, but the patient name doesn't, since grids often get shared. None of it is kept after the app closes, and "Clear for the next patient" empties it along with the before photos.
+
+Turn on Angle set to shoot Front, Left 45°, Left profile, Right 45° and Right profile in order. Each angle keeps its own before photo, ghost position and Focus loop, and the app moves to the next unsaved angle after each save. Picking several before photos at once fills the angles in order from the current one.
+
+## Saving
+
+With a before photo loaded, the review sheet shows a before/after wipe you can drag, a grid preview, and a choice of Side by side or Stacked for the grid. Save as grid, Save as single photo or Save both. The grid shows the date of each photo, read from the before photo's EXIF data or file date. Without a before photo, the shot saves straight away.
+
+## Camera buttons
+
+The top bar has, from left to right:
+
+- **Hide controls:** clears the badges, hint and extra buttons off the view.
+- **Self-timer:** cycles through off, 2, 3 and 5 seconds. Tapping the shutter during the countdown cancels it.
+- **Lock:** locks exposure and white balance at their current values, so the lighting doesn't drift between shots. It only shows on cameras that support it, mainly Chrome on Android.
+- **Flashlight:** shows only where the camera supports it.
+
 ## Settings
 
 Readout style, active camera, photo shape, ghost style, outline color and intensity, and zoom matching are in the settings sheet at the top right.

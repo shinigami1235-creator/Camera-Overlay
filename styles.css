@@ -131,6 +131,84 @@ button {
   backdrop-filter: blur(4px);
 }
 .icon-btn:active { background: rgba(16,28,43,.8); }
+.icon-btn[aria-pressed="true"] { background: var(--cs-brand-gold); color: var(--cs-brand-navy); }
+
+.top-actions { display: flex; align-items: center; gap: 6px; }
+.timer-btn { position: relative; }
+.timer-label {
+  position: absolute;
+  right: -2px; bottom: -2px;
+  font: 600 10px/1 var(--cs-font);
+  background: var(--cs-n-000);
+  color: var(--cs-brand-navy);
+  border-radius: var(--cs-r-pill);
+  padding: 2px 4px;
+}
+.timer-label:empty { display: none; }
+
+/* Narrow phones: keep the logo, drop the brand name, so the top buttons fit. */
+@media (max-width: 420px) {
+  .brand span { display: none; }
+}
+
+/* Patient and visit chip, first item in the status row. */
+.session-chip {
+  pointer-events: auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(16,28,43,.62);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(200,154,60,.6);
+  border-radius: var(--cs-r-pill);
+  padding: 6px var(--cs-3);
+  font: var(--cs-micro);
+  color: var(--cs-brand-gold-light);
+}
+.session-chip.is-empty { border-color: rgba(255,255,255,.12); color: var(--cs-n-200); }
+
+/* Angle set chips, top of the control bar. */
+.angle-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.angle-chip {
+  flex: 1 0 auto;
+  padding: 6px var(--cs-2);
+  border-radius: var(--cs-r-pill);
+  background: rgba(16,28,43,.6);
+  color: var(--cs-n-200);
+  font: var(--cs-micro);
+  border: 1px solid rgba(255,255,255,.1);
+  position: relative;
+}
+.angle-chip.has-before { color: var(--cs-n-000); }
+.angle-chip.is-current { background: var(--cs-n-000); color: var(--cs-brand-navy); border-color: var(--cs-n-000); }
+.angle-chip.is-done::before { content: "✓ "; color: var(--cs-brand-gold-light); }
+.angle-chip.is-current.is-done::before { color: var(--cs-brand-gold); }
+
+/* Self-timer countdown, centered over the camera view. */
+.countdown {
+  position: fixed;
+  left: 50%; top: 45%;
+  transform: translate(-50%, -50%);
+  z-index: 30;
+  font: 600 120px/1 var(--cs-font);
+  color: var(--cs-n-000);
+  text-shadow: 0 4px 24px rgba(0,0,0,.6);
+  pointer-events: none;
+}
+#shutter-btn.is-counting::after { background: var(--cs-danger); transform: scale(.6); border-radius: 8px; }
+
+/* Hide controls: only the camera, ghost, Ghost row and shutter row stay. */
+body.ui-hidden #status-row,
+body.ui-hidden .hint,
+body.ui-hidden #native-capture-btn,
+body.ui-hidden .brand { visibility: hidden; }
+body.ui-hidden #top-bar, body.ui-hidden #control-bar { background: none; }
 .icon-btn svg { width: 20px; height: 20px; }
 
 /* ---------- Status badges ---------- */
@@ -657,11 +735,104 @@ select {
 .btn-secondary { background: var(--cs-n-100); color: var(--cs-primary-700); }
 .btn-ghost { background: transparent; color: var(--cs-n-500); }
 
+/* ---------- Review: wipe compare + grid preview ---------- */
+.compare {
+  position: relative;
+  width: 100%;
+  max-height: 46vh;
+  aspect-ratio: 3 / 4;
+  margin: 0 auto;
+  border-radius: var(--cs-r-md);
+  overflow: hidden;
+  background: var(--cs-n-100);
+  touch-action: pan-y;
+  cursor: ew-resize;
+}
+.compare img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.compare-before-wrap { position: absolute; inset: 0; }
+.compare-handle {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--cs-brand-gold);
+  pointer-events: none;
+}
+.compare-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 28px; height: 28px;
+  margin: -14px 0 0 -14px;
+  border-radius: 50%;
+  background: var(--cs-brand-gold);
+  box-shadow: var(--cs-e2);
+}
+.compare-tag {
+  position: absolute;
+  top: var(--cs-2);
+  padding: 2px var(--cs-2);
+  border-radius: var(--cs-r-pill);
+  background: rgba(16,28,43,.7);
+  color: var(--cs-n-000);
+  font: var(--cs-micro);
+  pointer-events: none;
+}
+.compare-tag-before { left: var(--cs-2); }
+.compare-tag-after { right: var(--cs-2); }
+.compare-hint { text-align: center; margin-top: var(--cs-2) !important; }
+
+.grid-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cs-3);
+  margin-bottom: var(--cs-4);
+}
+.grid-row img {
+  flex: none;
+  width: 96px;
+  max-height: 120px;
+  object-fit: contain;
+  border-radius: var(--cs-r-sm);
+  background: var(--cs-n-100);
+}
+.grid-row-text { flex: 1; }
+.grid-row-text h3 { margin-top: 0; }
+
+/* ---------- Session sheet ---------- */
+.field {
+  display: block;
+  font: var(--cs-label);
+  font-weight: 600;
+  color: var(--cs-n-700);
+  margin: var(--cs-4) 0 var(--cs-1);
+}
+.text-input {
+  width: 100%;
+  font: var(--cs-body);
+  padding: 10px var(--cs-3);
+  border-radius: var(--cs-r-md);
+  border: 1px solid var(--cs-n-200);
+  background: var(--cs-n-000);
+  color: var(--cs-n-900);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.text-input:focus { outline: 2px solid var(--cs-primary-400); outline-offset: 0; }
+#session-sheet .review-actions { margin-top: var(--cs-4); }
+
 /* ---------- Toast ---------- */
 #toast {
   position: fixed;
-  left: 50%; bottom: 100px;
-  transform: translate(-50%, 12px);
+  left: 50%; top: calc(max(var(--cs-3), env(safe-area-inset-top)) + 56px);
+  transform: translate(-50%, -8px);
+  max-width: calc(100vw - 32px);
+  text-align: center;
   z-index: 60;
   background: var(--cs-n-900);
   color: var(--cs-n-000);

@@ -64,6 +64,8 @@
   </div>
 </div>
 
+<div id="countdown" class="countdown" aria-live="assertive" hidden></div>
+
 <canvas id="meter-canvas" class="visually-hidden" width="64" height="48"></canvas>
 <canvas id="capture-canvas" class="visually-hidden"></canvas>
 
@@ -78,16 +80,44 @@
       <img src="icons/icon-192.png" alt="">
       <span>Cygnus Solutions</span>
     </div>
+    <div class="top-actions">
+    <button id="hide-ui-btn" class="icon-btn" type="button" aria-pressed="false" aria-label="Hide controls">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+    </button>
+    <button id="timer-btn" class="icon-btn timer-btn" type="button" aria-pressed="false" aria-label="Self-timer off">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="13" r="8"/>
+        <path d="M12 9v4l2.5 2.5"/>
+        <path d="M9 2h6"/>
+      </svg>
+      <span id="timer-label" class="timer-label"></span>
+    </button>
+    <button id="lock-btn" class="icon-btn" type="button" aria-pressed="false" aria-label="Lock exposure and white balance" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="11" width="16" height="10" rx="2"/>
+        <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+      </svg>
+    </button>
+    <button id="torch-btn" class="icon-btn" type="button" aria-pressed="false" aria-label="Flashlight" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M13 2 4 14h7l-1 8 9-12h-7z"/>
+      </svg>
+    </button>
     <button id="settings-btn" class="icon-btn" type="button" aria-label="Settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"/>
         <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
       </svg>
     </button>
+    </div>
   </div>
 </header>
 
 <div id="status-row">
+  <button id="session-chip" class="session-chip is-empty" type="button">Add patient and visit</button>
   <div id="tilt-badge" class="badge status-na">
     <span class="dot"></span>
     <span class="label">Tilt</span>
@@ -110,6 +140,7 @@
 
 <footer id="control-bar">
   <div class="control-bar-inner">
+    <div id="angle-strip" class="angle-strip" role="group" aria-label="Angle" hidden></div>
     <div class="opacity-row">
       <label for="opacity-slider">Ghost</label>
       <input type="range" id="opacity-slider" min="0" max="90" step="1" value="45">
@@ -265,15 +296,24 @@
   <button id="review-close" class="sheet-close" type="button" aria-label="Close">✕</button>
   <h2>Photo captured</h2>
 
-  <div id="review-images">
-    <figure id="review-composite-wrap" hidden>
-      <img id="review-composite-img" alt="Before and after comparison">
-      <figcaption>Grid, before and after</figcaption>
-    </figure>
-    <figure>
-      <img id="review-after-img" alt="Captured photo">
-      <figcaption>Single photo</figcaption>
-    </figure>
+  <div id="compare" class="compare" aria-label="Drag to compare before and after">
+    <img id="compare-after" alt="New photo">
+    <div id="compare-before-wrap" class="compare-before-wrap"><img id="compare-before" alt="Before photo"></div>
+    <div id="compare-handle" class="compare-handle" aria-hidden="true"></div>
+    <span class="compare-tag compare-tag-before">Before</span>
+    <span class="compare-tag compare-tag-after">After</span>
+  </div>
+  <p class="desc compare-hint">Drag across the photo to compare.</p>
+
+  <div class="grid-row">
+    <img id="review-composite-img" alt="Grid preview">
+    <div class="grid-row-text">
+      <h3>Grid layout</h3>
+      <div id="grid-layout-picker" class="segmented" role="group" aria-label="Grid layout">
+        <button type="button" data-value="side" class="is-active">Side by side</button>
+        <button type="button" data-value="stacked">Stacked</button>
+      </div>
+    </div>
   </div>
 
   <pre id="review-debug" hidden></pre>
@@ -283,6 +323,33 @@
     <button id="save-single-btn" class="btn btn-secondary" type="button">Save as single photo</button>
     <button id="save-both-btn" class="btn btn-secondary" type="button">Save both</button>
     <button id="retake-btn" class="btn btn-ghost" type="button">Retake</button>
+  </div>
+</section>
+
+<section id="session-sheet" class="sheet" aria-label="Patient and visit">
+  <button id="session-close" class="sheet-close" type="button" aria-label="Close">✕</button>
+  <h2>Patient and visit</h2>
+  <p class="desc">The patient and visit go into the saved file names. The visit and angle also go on the grid. The patient name stays off the grid, since grids often get shared. Nothing here is kept after the app closes.</p>
+
+  <label class="field" for="patient-input">Patient</label>
+  <input id="patient-input" class="text-input" type="text" autocomplete="off" placeholder="Name or ID, like Maria S. or 1042">
+
+  <label class="field" for="visit-input">Visit</label>
+  <input id="visit-input" class="text-input" type="text" autocomplete="off" placeholder="Like Baseline, Week 4 or Day 7 post-op">
+
+  <div class="toggle-row">
+    <div class="toggle-row-text">
+      <label for="angle-set-toggle">Angle set</label>
+      <p class="desc">Steps through Front, Left 45°, Left profile, Right 45° and Right profile. Each angle keeps its own before photo, ghost position and Focus loop, and the app moves to the next angle after each save. Picking several before photos at once fills the angles in that order.</p>
+    </div>
+    <button id="angle-set-toggle" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Angle set">
+      <span class="toggle-knob"></span>
+    </button>
+  </div>
+
+  <div class="review-actions">
+    <button id="session-done-btn" class="btn btn-primary" type="button">Done</button>
+    <button id="clear-session-btn" class="btn btn-ghost" type="button">Clear for the next patient</button>
   </div>
 </section>
 
