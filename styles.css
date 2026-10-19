@@ -409,18 +409,8 @@ body.ui-hidden #top-bar, body.ui-hidden #control-bar { background: none; }
   font: var(--cs-micro);
 }
 .focus-btn svg { width: 16px; height: 16px; }
-.focus-redraw-btn {
-  flex: none;
-  width: 32px; height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--cs-r-pill);
-  background: rgba(255,255,255,.12);
-  color: var(--cs-n-000);
-}
-.focus-redraw-btn[hidden] { display: none; }
-.focus-redraw-btn svg { width: 16px; height: 16px; }
+/* Drawing a loop: gold outline, so it reads as "waiting for your finger". */
+.focus-btn.is-drawing { box-shadow: inset 0 0 0 2px var(--cs-brand-gold); color: var(--cs-brand-gold-light); }
 .focus-btn[aria-pressed="true"] {
   background: var(--cs-brand-gold);
   color: var(--cs-brand-navy);

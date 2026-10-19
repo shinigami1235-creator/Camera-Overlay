@@ -112,6 +112,7 @@ const state = {
   camera: { lockSupported: false, torchSupported: false, locked: false, torch: false },
   countdown: { timer: null, left: 0 },
   focus: { on: false, drawing: false },
+  focusLoop: null,    // the snapped loop as {u, v} points on the before photo, kept so it can be shown again while drawing
   focusHoleUrl: null, // PNG of the drawn area for the current before-photo (opaque inside, transparent outside), or null before one is drawn
   meterTimer: null,
   tiltProbeTimer: null,
@@ -160,7 +161,6 @@ function cacheDom() {
     ghostOutlineImg: id('ghost-outline-img'),
     blackout: id('blackout'),
     focusBtn: id('focus-btn'),
-    focusRedrawBtn: id('focus-redraw-btn'),
     lassoLayer: id('lasso-layer'),
     pin: id('pin'),
     meterCanvas: id('meter-canvas'),
@@ -607,7 +607,7 @@ async function pickBeforePhotos(files) {
     if (k === 0) {
       setCurrentBefore(before);
     } else {
-      state.session.slots[startAngle + k] = { before, ghost: defaultGhost(), focusHoleUrl: null, focusOn: false, done: false };
+      state.session.slots[startAngle + k] = { before, ghost: defaultGhost(), focusLoop: null, focusHoleUrl: null, focusOn: false, done: false };
     }
   }
   renderAngleStrip();
@@ -674,6 +674,7 @@ function setCurrentBefore(before) {
   state.before = before;
   state.ghost = defaultGhost();
   state.focus.on = false;
+  state.focusLoop = null;
   state.focusHoleUrl = null;
   if (state.session.slots[state.session.angle]) state.session.slots[state.session.angle].done = false;
   applyBeforeToUI();
@@ -912,7 +913,6 @@ function buildFocusMask(loop) {
 function updateBlackout() {
   const active = !!(state.focus.on && state.before.hasFile && state.focusHoleUrl);
   dom.focusBtn.setAttribute('aria-pressed', String(active));
-  dom.focusRedrawBtn.hidden = !state.focusHoleUrl;
   dom.blackout.style.display = active ? 'block' : 'none';
   if (!active) return;
 
@@ -941,15 +941,31 @@ function startFocusDrawing() {
   const layer = dom.lassoLayer;
   layer.width = dom.frame.clientWidth;
   layer.height = dom.frame.clientHeight;
-  layer.getContext('2d').clearRect(0, 0, layer.width, layer.height);
-  layer.classList.add('is-drawing');
   lassoPoints = [];
-  showToast('Draw a loop around the subject');
+  drawLassoPath(false);
+  layer.classList.add('is-drawing');
+  dom.focusBtn.classList.add('is-drawing');
+  showToast(state.focusLoop ? 'Draw a new loop, or tap Focus to keep the last one' : 'Draw a loop around the subject');
+}
+
+// Inverse of screenPointToPhoto(): a point on the before photo to a point on
+// the lasso layer, following the ghost's current drag, pinch and flip.
+function photoPointToLayer(p) {
+  const fw = dom.frame.clientWidth, fh = dom.frame.clientHeight;
+  const g = state.ghost;
+  const sx = (g.flipped ? -1 : 1) * g.scale, sy = g.scale;
+  const iw = state.before.img.naturalWidth, ih = state.before.img.naturalHeight;
+  const s = Math.max(fw / iw, fh / ih);
+  return {
+    x: fw / 2 + (g.offsetXPct / 100) * fw + (p.u - 0.5) * iw * s * sx,
+    y: fh / 2 + (g.offsetYPct / 100) * fh + (p.v - 0.5) * ih * s * sy,
+  };
 }
 
 function stopFocusDrawing() {
   state.focus.drawing = false;
   dom.lassoLayer.classList.remove('is-drawing');
+  dom.focusBtn.classList.remove('is-drawing');
   lassoPoints = [];
   lassoPointerId = null;
 }
@@ -958,7 +974,24 @@ function drawLassoPath(closed) {
   const layer = dom.lassoLayer;
   const ctx = layer.getContext('2d');
   ctx.clearRect(0, 0, layer.width, layer.height);
-  if (lassoPoints.length < 2) return;
+  if (lassoPoints.length < 2) {
+    // Nothing drawn yet: show the last loop, dashed, so it's clear what
+    // tapping Focus again would keep.
+    if (state.focus.drawing && state.focusLoop && state.before.img) {
+      ctx.beginPath();
+      state.focusLoop.forEach((p, i) => {
+        const q = photoPointToLayer(p);
+        if (i === 0) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y);
+      });
+      ctx.closePath();
+      ctx.setLineDash([8, 6]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(200,154,60,.8)';
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    return;
+  }
   ctx.beginPath();
   lassoPoints.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
   if (closed) ctx.closePath();
@@ -991,6 +1024,7 @@ function finishFocusDrawing() {
   } catch (err) {
     console.warn('edge snapping failed, using the loop as drawn', err);
   }
+  state.focusLoop = loop;
   state.focusHoleUrl = buildFocusMask(loop);
   state.focus.on = true;
   stopFocusDrawing();
@@ -1030,18 +1064,25 @@ function initLasso() {
   });
 }
 
+// Focus off: tap starts drawing, showing the last loop dashed if there is
+// one. While drawing: tap again keeps the last loop, or cancels if there
+// isn't one. Focus on: tap turns it off.
 function toggleFocusMode() {
-  if (state.focus.drawing) { stopFocusDrawing(); return; } // tapping Focus again cancels
+  if (state.focus.drawing) {
+    stopFocusDrawing();
+    if (state.focusHoleUrl) {
+      state.focus.on = true;
+      updateBlackout();
+    }
+    return;
+  }
   if (!state.before.hasFile) { showToast('Load a before photo first'); return; }
   if (state.focus.on) {
     state.focus.on = false;
     updateBlackout();
-  } else if (state.focusHoleUrl) {
-    state.focus.on = true;
-    updateBlackout();
-  } else {
-    startFocusDrawing();
+    return;
   }
+  startFocusDrawing();
 }
 
 // Re-runs edge detection against the cached before-photo Image using the
@@ -1296,7 +1337,7 @@ function initGhostGestures() {
   }
 
   dom.stage.addEventListener('pointerdown', (e) => {
-    if (isPinEvent(e) || !state.before.hasFile) return;
+    if (isPinEvent(e) || !state.before.hasFile || state.focus.drawing) return;
     try { dom.stage.setPointerCapture(e.pointerId); } catch (err) { /* best-effort; tracking below still works without capture */ }
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -1311,7 +1352,7 @@ function initGhostGestures() {
   });
 
   dom.stage.addEventListener('pointermove', (e) => {
-    if (!activePointers.has(e.pointerId)) return;
+    if (!activePointers.has(e.pointerId) || state.focus.drawing) return;
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (activePointers.size === 2 && pinchStart) {
@@ -1791,6 +1832,7 @@ function saveCurrentSlot() {
   state.session.slots[i] = {
     before: state.before,
     ghost: Object.assign({}, state.ghost),
+    focusLoop: state.focusLoop,
     focusHoleUrl: state.focusHoleUrl,
     focusOn: state.focus.on,
     done: old ? old.done : false,
@@ -1805,6 +1847,7 @@ function switchAngle(i) {
   const slot = state.session.slots[i];
   state.before = slot ? slot.before : emptyBefore();
   state.ghost = slot ? Object.assign({}, slot.ghost) : defaultGhost();
+  state.focusLoop = slot ? slot.focusLoop : null;
   state.focusHoleUrl = slot ? slot.focusHoleUrl : null;
   state.focus.on = slot ? slot.focusOn : false;
   applyBeforeToUI();
@@ -2127,7 +2170,6 @@ function wireControls() {
 
   dom.focusBtn.addEventListener('click', toggleFocusMode);
   wireExtras();
-  dom.focusRedrawBtn.addEventListener('click', startFocusDrawing);
 
   dom.flipGhostBtn.addEventListener('click', () => {
     state.ghost.flipped = !state.ghost.flipped;
