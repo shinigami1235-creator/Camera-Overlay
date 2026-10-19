@@ -159,7 +159,8 @@ function cacheDom() {
     reviewAfterImg: id('review-after-img'),
     reviewCompositeWrap: id('review-composite-wrap'),
     reviewCompositeImg: id('review-composite-img'),
-    keepSaveBtn: id('keep-save-btn'),
+    saveGridBtn: id('save-grid-btn'),
+    saveSingleBtn: id('save-single-btn'),
     retakeBtn: id('retake-btn'),
 
     toast: id('toast'),
@@ -1674,19 +1675,17 @@ function wireControls() {
 
   dom.reviewClose.addEventListener('click', closeSheets);
   dom.retakeBtn.addEventListener('click', closeSheets);
-  dom.keepSaveBtn.addEventListener('click', async () => {
-    const items = [{ dataUrl: state.lastCaptured.afterDataUrl, name: filename('photo') }];
-    if (state.lastCaptured.compositeDataUrl) {
-      items.push({ dataUrl: state.lastCaptured.compositeDataUrl, name: filename('comparison') });
-    }
-    await saveImages(items);
+  // The grid is the before and after side by side; the single photo is the new shot alone.
+  dom.saveGridBtn.addEventListener('click', async () => {
+    const { compositeDataUrl } = state.lastCaptured;
+    await saveImages([{ dataUrl: compositeDataUrl, name: filename('grid') }]);
     closeSheets();
   });
-}
-
-function applyPlatformLabels() {
-  const ios = isIOSDevice();
-  dom.keepSaveBtn.textContent = ios ? 'Keep & Save to Photos' : 'Keep & Download';
+  dom.saveSingleBtn.addEventListener('click', async () => {
+    const { afterDataUrl } = state.lastCaptured;
+    await saveImages([{ dataUrl: afterDataUrl, name: filename('photo') }]);
+    closeSheets();
+  });
 }
 
 function registerServiceWorker() {
@@ -1710,7 +1709,6 @@ function init() {
   initLasso();
   initTiltUI();
   updateLightingBadge();
-  applyPlatformLabels();
   wireControls();
   registerServiceWorker();
   window.addEventListener('resize', applyFrameSize);
