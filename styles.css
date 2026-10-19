@@ -776,6 +776,8 @@ select {
 .compare-tag-before { left: var(--cs-2); }
 .compare-tag-after { right: var(--cs-2); }
 .compare-hint { text-align: center; margin-top: var(--cs-2) !important; }
+.align-row { margin-top: 0; margin-bottom: var(--cs-3); }
+.toggle-switch:disabled { opacity: .4; }
 
 .grid-row {
   display: flex;

@@ -20,6 +20,9 @@ Turn on Angle set to shoot Front, Left 45°, Left profile, Right 45° and Right 
 
 ## Saving
 
+Auto-align lines the before photo up with the new one before the review sheet opens. It finds the small shift, size change and turn that make the two match best, using only the subject when a Focus loop is drawn, then crops both to the area they share. It works on shots that are off by up to about 12% in position, 10% in size and 6° in angle, and it handles a darker or brighter after photo. Only the before photo is moved. The review sheet says what it changed, and the Auto-align switch there shows the photos as framed instead. The single photo is always saved untouched.
+
+
 With a before photo loaded, the review sheet shows a before/after wipe you can drag, a grid preview, and a choice of Side by side or Stacked for the grid. Save as grid, Save as single photo or Save both. The grid shows the date of each photo, read from the before photo's EXIF data or file date. Without a before photo, the shot saves straight away.
 
 ## Camera buttons

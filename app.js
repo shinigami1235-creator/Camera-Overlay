@@ -99,6 +99,7 @@ const state = {
     preferHQStill: false,
     timer: 0,             // self-timer seconds, 0 = off
     gridLayout: 'side',   // 'side' (before | after) or 'stacked' (before above after)
+    autoAlign: true,      // line the before photo up with the new one for the compare view and grid
   },
   // Patient, visit and angle set. Kept in memory only, so it's gone when the
   // app closes, since this app doesn't store anything about patients.
@@ -202,6 +203,8 @@ function cacheDom() {
     compareHandle: id('compare-handle'),
     reviewCompositeImg: id('review-composite-img'),
     gridLayoutButtons: Array.from(document.querySelectorAll('#grid-layout-picker button')),
+    autoAlignToggle: id('auto-align-toggle'),
+    alignInfo: id('align-info'),
     saveGridBtn: id('save-grid-btn'),
     saveSingleBtn: id('save-single-btn'),
     saveBothBtn: id('save-both-btn'),
@@ -1583,6 +1586,7 @@ async function finishCapture(afterDataUrlRaw, tiltForExif, debugText) {
     afterDate: takenAt,
     footer: gridFooterText(),
     debugText: debugText || '',
+    pairs: null, // { raw, aligned, info } from buildComparePairs()
   };
 
   // No before photo: nothing to compare or retake against, so save straight
@@ -1592,12 +1596,28 @@ async function finishCapture(afterDataUrlRaw, tiltForExif, debugText) {
     markAngleSaved();
     return;
   }
+  showToast('Lining up the photos');
+  await new Promise((r) => setTimeout(r, 30)); // let the toast paint before the search runs
+  try {
+    state.lastCaptured.pairs = await buildComparePairs(state.before.img, afterDataUrl, Object.assign({}, state.ghost), state.focusLoop);
+  } catch (e) {
+    console.warn('auto-align failed', e);
+  }
   try {
     await rebuildComposite();
   } catch (e) {
     console.warn('composite build failed', e);
   }
   showReviewSheet();
+}
+
+// The before/after pair the compare view and grid use right now: the
+// auto-aligned one when that's on and it worked, otherwise the photos as
+// framed on screen. Falls back to the raw files if pairing failed entirely.
+function currentPair() {
+  const c = state.lastCaptured;
+  if (!c.pairs) return { before: c.beforeDataUrl, after: c.afterDataUrl };
+  return (state.settings.autoAlign && c.pairs.aligned) ? c.pairs.aligned : c.pairs.raw;
 }
 
 function exifDate(d) {
@@ -1607,7 +1627,8 @@ function exifDate(d) {
 
 async function rebuildComposite() {
   const c = state.lastCaptured;
-  c.compositeDataUrl = await buildComposite(c.beforeDataUrl, c.afterDataUrl, {
+  const pair = currentPair();
+  c.compositeDataUrl = await buildComposite(pair.before, pair.after, {
     layout: state.settings.gridLayout,
     beforeDate: c.beforeDate,
     afterDate: c.afterDate,
@@ -1657,14 +1678,9 @@ function handleNativeCaptureFile(file) {
 
 function showReviewSheet() {
   const c = state.lastCaptured;
-  dom.compareAfter.src = c.afterDataUrl;
-  dom.compareBefore.src = c.beforeDataUrl;
-  // The compare box takes the after photo's shape; the before photo fills it
-  // the same way the ghost does (object-fit: cover).
-  loadImg(c.afterDataUrl).then((img) => {
-    dom.compare.style.aspectRatio = img.naturalWidth + ' / ' + img.naturalHeight;
-  }).catch(() => {});
+  showComparePair();
   setComparePosition(50);
+  renderAlignInfo();
   dom.reviewCompositeImg.src = c.compositeDataUrl || '';
   dom.gridLayoutButtons.forEach((b) => b.classList.toggle('is-active', b.dataset.value === state.settings.gridLayout));
   if (DEBUG && dom.reviewDebug) {
@@ -1672,6 +1688,24 @@ function showReviewSheet() {
     dom.reviewDebug.textContent = c.debugText;
   }
   openSheet(dom.reviewSheet);
+}
+
+function showComparePair() {
+  const pair = currentPair();
+  dom.compareAfter.src = pair.after;
+  dom.compareBefore.src = pair.before;
+  // The compare box takes the pair's shape; both photos fill it (object-fit: cover).
+  loadImg(pair.after).then((img) => {
+    dom.compare.style.aspectRatio = img.naturalWidth + ' / ' + img.naturalHeight;
+  }).catch(() => {});
+}
+
+function renderAlignInfo() {
+  const p = state.lastCaptured.pairs;
+  const ok = !!(p && p.aligned);
+  dom.autoAlignToggle.disabled = !ok;
+  dom.autoAlignToggle.setAttribute('aria-checked', String(ok && state.settings.autoAlign));
+  dom.alignInfo.textContent = p ? p.info : "Couldn't line the photos up, so they're shown as taken";
 }
 
 // Wipe compare: the before photo shows left of the handle, the after photo right of it.
@@ -1807,6 +1841,255 @@ function showToast(msg) {
   dom.toast.classList.add('is-visible');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => dom.toast.classList.remove('is-visible'), 2800);
+}
+
+// ---------------------------------------------------------------------
+// Auto-align
+// ---------------------------------------------------------------------
+// Lines the before photo up with the new one, so the compare view and the
+// grid show the same spot even when the shot was off a little.
+//
+// 1. The before photo is placed exactly as the ghost showed it on screen
+//    (cover fit, plus the drag, pinch and flip), at the new photo's size.
+// 2. A small shift, scale and rotation on top of that is searched for, the
+//    one where the two photos match best. "Match" is normalized correlation
+//    of the grayscale images, so a darker or brighter after photo still
+//    matches. With a Focus loop drawn, only the subject inside it counts, so
+//    a changed background doesn't pull the result.
+// 3. The search runs coarse to fine: a wide grid on a 64px-wide copy, then
+//    one parameter at a time in small steps at 128px and 256px.
+// 4. Both photos are cropped to the area they share, so the grid has no
+//    empty edges.
+// The new photo itself is never warped; only the before photo moves, and
+// "Save as single photo" always saves the new photo untouched.
+const ALIGN_COARSE_W = 64;
+const ALIGN_FINE_WS = [128, 256];
+const ALIGN_MAX_SHIFT = 0.12;    // share of width/height the before photo may move
+const ALIGN_SCALE_RANGE = 0.1;   // ±10%
+const ALIGN_MAX_DEG = 6;         // ±6°
+const ALIGN_MIN_SCORE = 0.35;    // weaker matches than this count as "couldn't line up"
+
+function placeBeforeInFrame(ctx, img, ghost, W, H) {
+  const s0 = Math.max(W / img.naturalWidth, H / img.naturalHeight);
+  ctx.translate(W / 2 + (ghost.offsetXPct / 100) * W, H / 2 + (ghost.offsetYPct / 100) * H);
+  ctx.scale((ghost.flipped ? -1 : 1) * ghost.scale * s0, ghost.scale * s0);
+  ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+}
+
+// Applies the residual transform t = {tx, ty, s, th} (shift as a share of
+// width/height, scale, rotation in radians) around the image center.
+function applyResidual(ctx, t, W, H) {
+  ctx.translate(W / 2 + t.tx * W, H / 2 + t.ty * H);
+  ctx.rotate(t.th);
+  ctx.scale(t.s, t.s);
+  ctx.translate(-W / 2, -H / 2);
+}
+
+function grayOf(canvas) {
+  const w = canvas.width, h = canvas.height;
+  const d = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+  const g = new Float32Array(w * h), valid = new Uint8Array(w * h);
+  for (let i = 0, p = 0; p < w * h; i += 4, p++) {
+    g[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    valid[p] = d[i + 3] > 250 ? 1 : 0;
+  }
+  return { w, h, g, valid };
+}
+
+function canvasOf(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+
+// Grayscale copies of both photos at width w, plus the subject mask.
+function alignLevel(beforeImg, afterImg, ghost, loop, aspect, w) {
+  const h = Math.max(1, Math.round(w / aspect));
+  const a = canvasOf(w, h);
+  a.getContext('2d').drawImage(afterImg, 0, 0, w, h);
+  const b = canvasOf(w, h);
+  const bctx = b.getContext('2d');
+  bctx.save();
+  placeBeforeInFrame(bctx, beforeImg, ghost, w, h);
+  bctx.restore();
+  let mask = null;
+  if (loop && loop.length > 2) {
+    const m = canvasOf(w, h);
+    const mctx = m.getContext('2d');
+    // Same mapping as placeBeforeInFrame(), done by hand for the loop points.
+    const s0 = Math.max(w / beforeImg.naturalWidth, h / beforeImg.naturalHeight) * ghost.scale;
+    const fx = ghost.flipped ? -1 : 1;
+    mctx.fillStyle = '#000';
+    mctx.beginPath();
+    loop.forEach((p, i) => {
+      const x = w / 2 + (ghost.offsetXPct / 100) * w + (p.u - 0.5) * beforeImg.naturalWidth * s0 * fx;
+      const y = h / 2 + (ghost.offsetYPct / 100) * h + (p.v - 0.5) * beforeImg.naturalHeight * s0;
+      if (i === 0) mctx.moveTo(x, y); else mctx.lineTo(x, y);
+    });
+    mctx.closePath();
+    mctx.fill();
+    const md = mctx.getImageData(0, 0, w, h).data;
+    mask = new Uint8Array(w * h);
+    for (let p = 0; p < w * h; p++) mask[p] = md[p * 4 + 3] > 128 ? 1 : 0;
+  }
+  return { w, h, A: grayOf(a), B: grayOf(b), mask };
+}
+
+// Normalized correlation between the after photo and the before photo moved
+// by t. Returns -1 when too little of the two overlaps to judge.
+function alignScore(L, t, stride) {
+  const { w, h, A, B, mask } = L;
+  const cx = w / 2, cy = h / 2;
+  const cos = Math.cos(-t.th), sin = Math.sin(-t.th);
+  const ox = cx + t.tx * w, oy = cy + t.ty * h;
+  let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0, total = 0;
+  for (let y = 0; y < h; y += stride) {
+    for (let x = 0; x < w; x += stride) {
+      const i = y * w + x;
+      if (mask && !mask[i]) continue;
+      total++;
+      const dx = (x - ox) / t.s, dy = (y - oy) / t.s;
+      const sx = cx + dx * cos - dy * sin, sy = cy + dx * sin + dy * cos;
+      const x0 = Math.floor(sx), y0 = Math.floor(sy);
+      if (x0 < 0 || y0 < 0 || x0 >= w - 1 || y0 >= h - 1) continue;
+      const j = y0 * w + x0;
+      if (!B.valid[j] || !B.valid[j + 1] || !B.valid[j + w] || !B.valid[j + w + 1]) continue;
+      const fx = sx - x0, fy = sy - y0;
+      const b = B.g[j] * (1 - fx) * (1 - fy) + B.g[j + 1] * fx * (1 - fy) + B.g[j + w] * (1 - fx) * fy + B.g[j + w + 1] * fx * fy;
+      const a = A.g[i];
+      n++; sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
+    }
+  }
+  if (!total || n < total * 0.5 || n < 30) return -1;
+  const va = n * saa - sa * sa, vb = n * sbb - sb * sb;
+  if (va <= 0 || vb <= 0) return -1;
+  return (n * sab - sa * sb) / Math.sqrt(va * vb);
+}
+
+function estimateAlignment(beforeImg, afterImg, ghost, loop) {
+  const aspect = afterImg.naturalWidth / afterImg.naturalHeight;
+  const deg = Math.PI / 180;
+  const coarse = alignLevel(beforeImg, afterImg, ghost, loop, aspect, ALIGN_COARSE_W);
+  const identity = { tx: 0, ty: 0, s: 1, th: 0 };
+  const baseScore = alignScore(coarse, identity, 1);
+
+  // Wide grid at the coarse level.
+  let best = identity, bestScore = baseScore;
+  const shiftStep = 1 / ALIGN_COARSE_W;
+  for (let tx = -ALIGN_MAX_SHIFT; tx <= ALIGN_MAX_SHIFT + 1e-9; tx += shiftStep) {
+    for (let ty = -ALIGN_MAX_SHIFT; ty <= ALIGN_MAX_SHIFT + 1e-9; ty += shiftStep) {
+      for (let s = 1 - ALIGN_SCALE_RANGE; s <= 1 + ALIGN_SCALE_RANGE + 1e-9; s += 0.0333) {
+        for (let th = -ALIGN_MAX_DEG; th <= ALIGN_MAX_DEG + 1e-9; th += 2) {
+          const t = { tx, ty, s, th: th * deg };
+          const sc = alignScore(coarse, t, 2);
+          if (sc > bestScore) { bestScore = sc; best = t; }
+        }
+      }
+    }
+  }
+  // A best match pinned at the edge of the search usually means the photos
+  // don't really match, not that the shot was that far off.
+  const atEdge = Math.abs(best.tx) >= ALIGN_MAX_SHIFT - shiftStep || Math.abs(best.ty) >= ALIGN_MAX_SHIFT - shiftStep
+    || Math.abs(best.s - 1) >= ALIGN_SCALE_RANGE - 0.001 || Math.abs(best.th) >= ALIGN_MAX_DEG * deg - 1e-6;
+  if (atEdge) return null;
+
+  // Small local steps at finer levels.
+  let finalScore = bestScore;
+  ALIGN_FINE_WS.forEach((w) => {
+    const L = alignLevel(beforeImg, afterImg, ghost, loop, aspect, w);
+    const st = 1 / w;
+    const stride = w >= 256 ? 2 : 1;
+    // Coordinate descent: nudge one parameter at a time while it helps.
+    let centerScore = alignScore(L, best, stride);
+    const steps = { tx: st, ty: st, s: 0.005, th: 0.25 * deg };
+    for (let round = 0; round < 8; round++) {
+      let improved = false;
+      Object.keys(steps).forEach((k) => {
+        [-2, -1, 1, 2].forEach((m) => {
+          const t = Object.assign({}, best);
+          t[k] += m * steps[k];
+          const sc = alignScore(L, t, stride);
+          if (sc > centerScore) { centerScore = sc; best = t; improved = true; }
+        });
+      });
+      if (!improved) break;
+    }
+    finalScore = centerScore;
+  });
+
+  if (finalScore < ALIGN_MIN_SCORE) return null;
+  return { t: best, score: finalScore, baseScore };
+}
+
+// Largest centered rectangle, in the new photo's shape, that the moved
+// before photo fully covers. Returns its size as a share of the photo (1 = all).
+function sharedCropShare(beforeImg, ghost, t, W, H) {
+  const w = 160, h = Math.max(1, Math.round(160 * H / W));
+  const c = canvasOf(w, h);
+  const ctx = c.getContext('2d');
+  applyResidual(ctx, t, w, h);
+  placeBeforeInFrame(ctx, beforeImg, ghost, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const ok = (x, y) => d[((Math.min(h - 1, Math.max(0, Math.round(y))) * w) + Math.min(w - 1, Math.max(0, Math.round(x)))) * 4 + 3] > 250;
+  const fits = (f) => {
+    const x0 = w / 2 - f * w / 2, x1 = w / 2 + f * w / 2 - 1, y0 = h / 2 - f * h / 2, y1 = h / 2 + f * h / 2 - 1;
+    for (let k = 0; k <= 40; k++) {
+      const x = x0 + (x1 - x0) * k / 40, y = y0 + (y1 - y0) * k / 40;
+      if (!ok(x, y0) || !ok(x, y1) || !ok(x0, y) || !ok(x1, y)) return false;
+    }
+    return true;
+  };
+  if (fits(1)) return 1;
+  let lo = 0.3, hi = 1;
+  if (!fits(lo)) return 0;
+  for (let k = 0; k < 12; k++) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) lo = mid; else hi = mid;
+  }
+  return lo;
+}
+
+// The before photo moved by t and the new photo, both cropped to the area
+// they share, as JPEG data URLs.
+function renderPair(beforeImg, afterImg, ghost, t) {
+  const W = afterImg.naturalWidth, H = afterImg.naturalHeight;
+  const f = sharedCropShare(beforeImg, ghost, t, W, H);
+  if (f < 0.5) return null;
+  const cw = Math.round(W * f), ch = Math.round(H * f);
+  const ox = (W - cw) / 2, oy = (H - ch) / 2;
+  const b = canvasOf(cw, ch);
+  const bctx = b.getContext('2d');
+  bctx.fillStyle = '#101C2B';
+  bctx.fillRect(0, 0, cw, ch);
+  bctx.translate(-ox, -oy);
+  applyResidual(bctx, t, W, H);
+  placeBeforeInFrame(bctx, beforeImg, ghost, W, H);
+  const a = canvasOf(cw, ch);
+  a.getContext('2d').drawImage(afterImg, ox, oy, cw, ch, 0, 0, cw, ch);
+  return { before: b.toDataURL('image/jpeg', 0.92), after: a.toDataURL('image/jpeg', 0.92) };
+}
+
+function describeAlignment(t, gaveUp) {
+  if (gaveUp) return "Couldn't find a close match, so the photos are shown as framed";
+  const shift = Math.hypot(t.tx, t.ty) * 100, deg = Math.abs(t.th * 180 / Math.PI), sc = Math.abs(t.s - 1) * 100;
+  if (shift < 0.5 && deg < 0.3 && sc < 0.5) return 'Auto-aligned. The photos were already lined up.';
+  const parts = [];
+  if (shift >= 0.5) parts.push('moved ' + shift.toFixed(1) + '%');
+  if (sc >= 0.5) parts.push((t.s > 1 ? 'enlarged ' : 'shrunk ') + sc.toFixed(1) + '%');
+  if (deg >= 0.3) parts.push('turned ' + deg.toFixed(1) + '°');
+  return 'Auto-aligned. The before photo was ' + parts.join(', ') + ' to match.';
+}
+
+// Builds the raw pair (as framed on screen) and, when matching works, the
+// aligned pair, so the Auto-align switch flips between them instantly.
+async function buildComparePairs(beforeImg, afterDataUrl, ghost, loop) {
+  const afterImg = await loadImg(afterDataUrl);
+  const identity = { tx: 0, ty: 0, s: 1, th: 0 };
+  const raw = renderPair(beforeImg, afterImg, ghost, identity) || { before: state.before.dataUrl, after: afterDataUrl };
+  let est = null;
+  try { est = estimateAlignment(beforeImg, afterImg, ghost, loop); } catch (e) { console.warn('alignment search failed', e); }
+  const aligned = est ? renderPair(beforeImg, afterImg, ghost, est.t) : null;
+  return { raw, aligned, info: describeAlignment(est && est.t, !aligned), t: est && est.t };
 }
 
 // ---------------------------------------------------------------------
@@ -2066,6 +2349,14 @@ function wireExtras() {
     clearSession();
     closeSheets();
     showToast('Ready for the next patient');
+  });
+
+  dom.autoAlignToggle.addEventListener('click', async () => {
+    state.settings.autoAlign = !state.settings.autoAlign;
+    saveSettings();
+    renderAlignInfo();
+    showComparePair();
+    try { await rebuildComposite(); } catch (e) { console.warn('composite build failed', e); }
   });
 
   dom.gridLayoutButtons.forEach((btn) => {
