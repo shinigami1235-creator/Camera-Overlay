@@ -161,6 +161,7 @@ function cacheDom() {
     reviewCompositeImg: id('review-composite-img'),
     saveGridBtn: id('save-grid-btn'),
     saveSingleBtn: id('save-single-btn'),
+    saveBothBtn: id('save-both-btn'),
     retakeBtn: id('retake-btn'),
 
     toast: id('toast'),
@@ -1684,6 +1685,14 @@ function wireControls() {
   dom.saveSingleBtn.addEventListener('click', async () => {
     const { afterDataUrl } = state.lastCaptured;
     await saveImages([{ dataUrl: afterDataUrl, name: filename('photo') }]);
+    closeSheets();
+  });
+  dom.saveBothBtn.addEventListener('click', async () => {
+    const { afterDataUrl, compositeDataUrl } = state.lastCaptured;
+    await saveImages([
+      { dataUrl: afterDataUrl, name: filename('photo') },
+      { dataUrl: compositeDataUrl, name: filename('grid') },
+    ]);
     closeSheets();
   });
 }
